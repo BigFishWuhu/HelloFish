@@ -86,6 +86,7 @@ PROFILE_FRIEND_MAX_SCROLLS = 10
 CONTRIBUTION_SCROLL_X = 650
 CONTRIBUTION_SCROLL_START_Y = 1040
 CONTRIBUTION_SCROLL_END_Y = 650
+UNOPENABLE_PROFILE_NAMES = {"神秘人"}
 
 
 class _ScanStopped(Exception):
@@ -275,6 +276,35 @@ def _find_contribution_targets(
         sorted(top3_targets, key=lambda value: value[0]),
         sorted(rank_rows, key=lambda value: value[1]),
     )
+
+
+def _find_unopenable_contribution_ranks(hierarchy: str) -> set[int]:
+    root = _parse_android_hierarchy(hierarchy)
+    if root is None:
+        return set()
+
+    rank_nodes: list[tuple[int, tuple[int, int, int, int]]] = []
+    unopenable_name_ys: list[int] = []
+    for node in root.iter("node"):
+        resource_id = node.attrib.get("resource-id", "")
+        box = _parse_android_bounds(node.attrib.get("bounds", ""))
+        if not box:
+            continue
+        if resource_id.endswith(":id/tv_rank"):
+            text = node.attrib.get("text", "").strip()
+            if re.fullmatch(r"\d{1,3}", text) and int(text) >= 4:
+                rank_nodes.append((int(text), box))
+        elif (
+            resource_id.endswith(":id/tv_nickname")
+            and node.attrib.get("text", "").strip() in UNOPENABLE_PROFILE_NAMES
+        ):
+            unopenable_name_ys.append(_center(box)[1])
+
+    return {
+        rank
+        for rank, box in rank_nodes
+        if any(abs(_center(box)[1] - name_y) <= 60 for name_y in unopenable_name_ys)
+    }
 
 
 def _is_contribution_hierarchy(hierarchy: str) -> bool:
@@ -592,6 +622,10 @@ class ContributionScanner(CustomAction):
                         return
 
             rank_rows = hierarchy_rows or self._find_rank_rows(items)
+            unopenable_ranks = _find_unopenable_contribution_ranks(hierarchy)
+            unopenable_ranks.update(
+                self._find_unopenable_ocr_ranks(items, rank_rows)
+            )
             fingerprint = tuple(rank for rank, _ in rank_rows)
             if not fingerprint or fingerprint in page_fingerprints:
                 self._log(f"厅 {room_id} 贡献榜已到底")
@@ -606,6 +640,12 @@ class ContributionScanner(CustomAction):
                 if max_users and rank > max_users:
                     self._log(f"厅 {room_id} 已达到贡献榜前 {max_users} 名的扫描上限")
                     return
+                if rank in unopenable_ranks:
+                    self._log(f"排名 {rank} 为神秘人，资料页不可访问，跳过")
+                    if max_users and rank >= max_users:
+                        self._log(f"厅 {room_id} 已完成贡献榜前 {max_users} 名的扫描")
+                        return
+                    continue
                 self._log(f"厅 {room_id} 正在读取排名 {rank} 的用户")
                 self._record_user(
                     context=context,
@@ -674,7 +714,7 @@ class ContributionScanner(CustomAction):
         processed_users: set[tuple[str, str]],
         delay: float,
         unknown_gender_as_male: bool,
-    ) -> None:
+    ) -> bool:
         self._check_stopping(context)
         self.controller.post_click(click_point[0], click_point[1]).wait()
         self._sleep(context, delay)
@@ -688,6 +728,17 @@ class ContributionScanner(CustomAction):
             if profile_items:
                 break
             self._sleep(context, 0.5)
+
+        # Some leaderboard users do not expose a profile even though Android
+        # reports their avatar as clickable.  Do not interpret leaderboard
+        # IDs as profile data or press Back in that state: Back would close
+        # the contribution panel and make the next scroll look like the end.
+        if self._is_contribution_panel(profile_items) or _is_contribution_hierarchy(
+            self._last_profile_hierarchy
+        ):
+            self._log(f"排名 {rank} 的头像点击后仍在贡献榜，跳过")
+            return False
+
         if not user_id:
             user_id = self._extract_profile_id(profile_items)
             if user_id:
@@ -696,7 +747,7 @@ class ContributionScanner(CustomAction):
             self._log(f"排名 {rank} 的用户详情未获取到 ID，跳过")
             self.controller.post_click_key(4).wait()
             self._sleep(context, delay * 0.6)
-            return
+            return True
 
         key = (room_id, user_id)
         ocr_user_id = self._extract_profile_id(profile_items)
@@ -788,6 +839,7 @@ class ContributionScanner(CustomAction):
             f"用户={username}({user_id}) 性别={gender} IP={ip} "
             f"挚友={close_friend_count} 财富={wealth_level} 魅力={charm_level}"
         )
+        return True
 
     def _save_level_sample(
         self,
@@ -1031,6 +1083,22 @@ class ContributionScanner(CustomAction):
             seen.add(rank)
             rows.append((rank, y + height // 2))
         return sorted(rows, key=lambda value: value[1])
+
+    @staticmethod
+    def _find_unopenable_ocr_ranks(
+        items: list[Any],
+        rank_rows: list[tuple[int, int]],
+    ) -> set[int]:
+        unopenable_name_ys = [
+            _box(item)[1] + _box(item)[3] // 2
+            for item in items
+            if _result_text(item) in UNOPENABLE_PROFILE_NAMES
+        ]
+        return {
+            rank
+            for rank, row_y in rank_rows
+            if any(abs(row_y - name_y) <= 60 for name_y in unopenable_name_ys)
+        }
 
     def _extract_profile_id(self, items: list[Any]) -> str | None:
         for item in sorted(items, key=lambda value: _box(value)[1]):

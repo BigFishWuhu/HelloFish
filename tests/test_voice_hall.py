@@ -1001,6 +1001,107 @@ class HallListRecognitionTest(unittest.TestCase):
         self.assertIs(result, next_page)
         self.assertEqual(controller.swipes, [(650, 1040, 650, 650, 700)])
 
+    def test_record_user_does_not_treat_leaderboard_as_profile(self) -> None:
+        controller = FakeController()
+        self.scanner.controller = controller
+        leaderboard = [
+            ocr("房间贡献榜", (330, 55, 150, 35)),
+            ocr("ID:23485897", (76, 461, 115, 28)),
+            ocr("14", (42, 1050, 28, 30)),
+        ]
+
+        with (
+            patch.object(self.scanner, "_copy_profile_id", return_value=None),
+            patch.object(
+                self.scanner,
+                "_capture_ocr",
+                return_value=(None, leaderboard),
+            ),
+            patch(
+                "voice_hall.VoiceHallDatabase.upsert_contribution",
+            ) as upsert_database,
+            patch.object(self.scanner, "_log") as log,
+            patch("voice_hall.time.sleep"),
+        ):
+            result = self.scanner._record_user(
+                context=SimpleNamespace(),
+                room_id="51795",
+                room_name="坏天气の新厅开业",
+                rank=14,
+                click_point=(130, 1063),
+                output_path=Path("result.sqlite3"),
+                records=[],
+                processed_users=set(),
+                delay=0.1,
+                unknown_gender_as_male=False,
+            )
+
+        self.assertFalse(result)
+        self.assertEqual(controller.clicks, [(130, 1063)])
+        upsert_database.assert_not_called()
+        log.assert_called_once_with("排名 14 的头像点击后仍在贡献榜，跳过")
+
+    def test_contribution_scan_skips_unopenable_mystery_user(self) -> None:
+        controller = FakeController()
+        self.scanner.controller = controller
+        hierarchy = """<?xml version='1.0'?>
+        <hierarchy>
+          <node text="房间贡献榜" resource-id="" selected="true"
+                bounds="[333,55][463,95]" />
+          <node text="" resource-id="app:id/rv_rank_list"
+                bounds="[0,547][720,1126]" />
+          <node text="13" resource-id="app:id/tv_rank"
+                bounds="[13,535][94,567]" />
+          <node text="" resource-id="app:id/iv_avatar"
+                bounds="[94,514][167,587]" />
+          <node text="14" resource-id="app:id/tv_rank"
+                bounds="[13,662][94,694]" />
+          <node text="" resource-id="app:id/iv_avatar"
+                bounds="[94,641][167,714]" />
+          <node text="神秘人" resource-id="app:id/tv_nickname"
+                bounds="[194,641][263,674]" />
+          <node text="15" resource-id="app:id/tv_rank"
+                bounds="[13,789][94,821]" />
+          <node text="" resource-id="app:id/iv_avatar"
+                bounds="[94,768][167,841]" />
+        </hierarchy>"""
+
+        with (
+            patch.object(self.scanner, "_open_contribution_panel"),
+            patch.object(
+                self.scanner,
+                "_capture_ocr",
+                return_value=(None, [ocr("房间贡献榜", (330, 55, 150, 35))]),
+            ),
+            patch.object(
+                self.scanner,
+                "_dump_ui_hierarchy",
+                return_value=hierarchy,
+            ),
+            patch.object(self.scanner, "_record_user") as record,
+            patch.object(self.scanner, "_scroll_contribution", return_value=None),
+            patch.object(self.scanner, "_log") as log,
+        ):
+            self.scanner._scan_contribution(
+                context=SimpleNamespace(),
+                room_id="51795",
+                room_name="坏天气の新厅开业",
+                output_path=Path("result.sqlite3"),
+                records=[],
+                processed_users=set(),
+                delay=0.1,
+                max_pages=1,
+                max_users=0,
+                include_top3=False,
+                unknown_gender_as_male=False,
+            )
+
+        self.assertEqual(
+            [call.kwargs["rank"] for call in record.call_args_list],
+            [13, 15],
+        )
+        log.assert_any_call("排名 14 为神秘人，资料页不可访问，跳过")
+
     def test_contribution_scan_stops_at_configured_rank_limit(self) -> None:
         controller = FakeController()
         self.scanner.controller = controller
