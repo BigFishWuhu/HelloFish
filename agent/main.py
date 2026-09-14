@@ -1,4 +1,15 @@
+import os
 import sys
+from pathlib import Path
+
+
+# MXU loads MaaFramework from ./maafw. Make the Python Agent load its
+# MaaAgentServer from the same release directory, otherwise a system-wide
+# MaaFw installation can use a different Agent protocol version.
+project_root = Path(__file__).resolve().parent.parent
+packaged_maafw = project_root / "maafw"
+if packaged_maafw.is_dir():
+    os.environ["MAAFW_BINARY_PATH"] = str(packaged_maafw)
 
 from maa.agent.agent_server import AgentServer
 from maa.toolkit import Toolkit
