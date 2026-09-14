@@ -5,7 +5,7 @@ env:
   # - 设置 VERSION 为空字符串时，下载 latest 版本
   # - 设置 VERSION 为具体版本号时（如 v1.2.3），下载指定版本
   MAAFW_VERSION: ""
-  MFAA_VERSION: ""
+  MXU_VERSION: ""
 
 on:
   push:
@@ -16,6 +16,9 @@ on:
     paths:
       - ".github/workflows/install.yml"
       - "assets/**"
+      - "agent/**"
+      - "tools/**"
+      - "README.md"
       - "**.py"
   pull_request:
     branches:
@@ -23,6 +26,9 @@ on:
     paths:
       - ".github/workflows/install.yml"
       - "assets/**"
+      - "agent/**"
+      - "tools/**"
+      - "README.md"
       - "**.py"
   workflow_dispatch:
 
@@ -72,8 +78,22 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        os: [win, macos, linux, android]
-        arch: [aarch64, x86_64]
+        include:
+          - os: win
+            arch: x86_64
+            mxu_binary: mxu.exe
+          - os: win
+            arch: aarch64
+            mxu_binary: mxu.exe
+          - os: linux
+            arch: x86_64
+            mxu_binary: mxu
+          - os: macos
+            arch: x86_64
+            mxu_binary: mxu
+          - os: macos
+            arch: aarch64
+            mxu_binary: mxu
       fail-fast: false
 
     steps:
@@ -91,56 +111,37 @@ jobs:
           out-file-path: "deps"
           extract: true
 
-      - name: Download MFAAvalonia
-        if: matrix.os != 'android'
-        id: download_mfa
+      - name: Download MXU
         uses: robinraju/release-downloader@v1
         with:
-          repository: SweetSmellFox/MFAAvalonia
-          fileName: "MFAAvalonia-*-${{ (matrix.os == 'win' && 'win') || (matrix.os == 'macos' && 'osx') || (matrix.os == 'linux' && 'linux') }}-${{ (matrix.arch == 'x86_64' && 'x64') || (matrix.arch == 'aarch64' && 'arm64') }}*"
-          latest: ${{ env.MFAA_VERSION == '' }}
-          tag: ${{ env.MFAA_VERSION }}
-          out-file-path: "MFA"
+          repository: MistEO/MXU
+          fileName: "MXU-${{ matrix.os }}-${{ matrix.arch }}-*"
+          latest: ${{ env.MXU_VERSION == '' }}
+          tag: ${{ env.MXU_VERSION }}
+          out-file-path: "MXU"
           extract: true
 
-      - name: Clean up MFAAvalonia archive
-        if: matrix.os != 'android'
-        shell: bash
-        run: |
-          ARCHIVE_FILE_PATH="${{ fromJson(steps.download_mfa.outputs.downloaded_files)[0] }}"
-          rm -f "${ARCHIVE_FILE_PATH}"
-          echo "Archive cleanup command executed for MFAAvalonia."
-
-      - name: Remove built-in runtime in MFA
-        if: matrix.os != 'android'
-        shell: bash
-        run: |
-          rm -rf MFA/runtimes
-      
       - name: Install
         shell: bash
         run: |
-          if [[ "${{ matrix.os }}" != "android" ]]; then
-            if [ -d "MFA" ]; then
-              echo "Copying MFA files to install directory..."
-              mkdir -p install
-              rsync -av --ignore-existing MFA/ install/
-              echo "MFA files copied successfully."
-            else
-              echo "MFA directory not found, skipping copy."
-            fi
-          else
-            echo "Skipping copy MFA for Android."
-          fi
-
           cd tools/
           python -m pip install -r ./requirements.txt
           python ./install.py ${{ needs.meta.outputs.tag }} ${{ matrix.os }} ${{ matrix.arch }}
           cd ..
 
+          MXU_EXECUTABLE=$(find MXU -type f -name '${{ matrix.mxu_binary }}' | head -n 1)
+          if [[ -z "$MXU_EXECUTABLE" ]]; then
+            echo "MXU executable was not found in the downloaded archive."
+            exit 1
+          fi
+          cp "$MXU_EXECUTABLE" "install/${{ matrix.mxu_binary }}"
+          if [[ "${{ matrix.os }}" != "win" ]]; then
+            chmod +x "install/${{ matrix.mxu_binary }}"
+          fi
+
       - uses: actions/upload-artifact@v4
         with:
-          name: MaaXXX-${{ matrix.os }}-${{ matrix.arch }}
+          name: HelloFish-${{ matrix.os }}-${{ matrix.arch }}
           path: "install"
 
   changelog:

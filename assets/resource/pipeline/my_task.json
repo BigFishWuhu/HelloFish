@@ -1,4 +1,23 @@
 {
+    "VoiceHallScanStart": {
+        "recognition": "DirectHit",
+        "action": "Custom",
+        "custom_action": "scan_voice_hall_contributions",
+        "custom_action_param": {
+            "database": "data/voice_hall.sqlite3",
+            "state_file": "data/voice_hall_scan_state.json",
+            "max_halls": 0,
+            "max_hall_pages": 100,
+            "max_contribution_pages": 100,
+            "max_users_per_hall": 0,
+            "include_top3": true,
+            "unknown_gender_as_male": false,
+            "action_delay": 0.8
+        }
+    },
+    "OCRFull": {
+        "recognition": "OCR"
+    },
     "MyTask1": {},
     "MyTask2": {},
     "MyTask3": {},
