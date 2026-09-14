@@ -86,18 +86,6 @@ jobs:
           - os: win
             arch: x86_64
             mxu_binary: mxu.exe
-          - os: win
-            arch: aarch64
-            mxu_binary: mxu.exe
-          - os: linux
-            arch: x86_64
-            mxu_binary: mxu
-          - os: macos
-            arch: x86_64
-            mxu_binary: mxu
-          - os: macos
-            arch: aarch64
-            mxu_binary: mxu
       fail-fast: false
 
     steps:
