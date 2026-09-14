@@ -1,20 +1,29 @@
 import csv
 import io
 import json
+import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
 from contextlib import closing
 from datetime import date
+from http import HTTPStatus
 from pathlib import Path
+from unittest.mock import patch
+from urllib.request import urlopen
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agent"))
 
+import contribution_viewer  # noqa: E402
 from contribution_viewer import (  # noqa: E402
     RecordQuery,
+    ContributionViewerServer,
+    HEALTH_RESPONSE,
     export_records_csv,
+    is_server_running,
     load_settings,
     parse_export_columns,
     query_records,
@@ -197,6 +206,54 @@ class ContributionViewerTest(unittest.TestCase):
         self.assertEqual(columns, ["user_id", "username"])
         with self.assertRaisesRegex(ValueError, "至少选择"):
             parse_export_columns({"columns": ["not-a-column"]})
+
+    def test_health_endpoint_identifies_the_viewer(self) -> None:
+        web_root = self.root / "web"
+        web_root.mkdir()
+        web_root.joinpath("index.html").write_text("viewer", encoding="utf-8")
+        server = ContributionViewerServer(
+            ("127.0.0.1", 0),
+            self.database_path,
+            self.settings_path,
+            web_root,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        health_url = f"http://127.0.0.1:{server.server_port}/api/health"
+        try:
+            self.assertTrue(is_server_running(health_url))
+            with urlopen(health_url, timeout=1) as response:  # noqa: S310
+                self.assertEqual(response.status, HTTPStatus.OK)
+                self.assertEqual(json.load(response), HEALTH_RESPONSE)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    @patch("contribution_viewer.subprocess.Popen")
+    @patch("contribution_viewer.is_server_running", side_effect=[False, True])
+    def test_background_server_is_launched_with_the_mxu_owner_pid(
+        self,
+        server_running,
+        popen,
+    ) -> None:
+        log_path = self.root / "viewer.log"
+        self.assertTrue(
+            contribution_viewer.start_background_server(
+                owner_pid=12345,
+                startup_timeout=1,
+                log_path=log_path,
+            )
+        )
+        command = popen.call_args.args[0]
+        self.assertEqual(command[-2:], ["--owner-pid", "12345"])
+        self.assertIn("--serve", command)
+        self.assertEqual(server_running.call_count, 2)
+        self.assertTrue(log_path.is_file())
+
+    def test_process_probe_recognizes_the_current_process(self) -> None:
+        self.assertTrue(contribution_viewer._process_exists(os.getpid()))
+        self.assertFalse(contribution_viewer._process_exists(-1))
 
 
 if __name__ == "__main__":

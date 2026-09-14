@@ -30,10 +30,16 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATABASE = PROJECT_ROOT / "data" / "voice_hall.sqlite3"
 DEFAULT_STATE = PROJECT_ROOT / "data" / "voice_hall_scan_state.json"
 DEFAULT_DEBUG_LOG = PROJECT_ROOT / "data" / "voice_hall_agent.log"
+DEFAULT_OPEN_FAILURE_DIR = PROJECT_ROOT / "debug" / "on_error"
 CHINA_TZ = timezone(timedelta(hours=8))
 
 OCR_NODE = "OCRFull"
+SKIP_SCANNED_CUSTOM_ACTION = "scan_voice_hall_contributions_skip_scanned"
 CROWN_BUTTON = (594, 83)
+FIRST_HALL_WARMUP_SECONDS = 3.0
+CONTRIBUTION_REENTRY_WARMUP_SECONDS = 1.5
+PROFILE_OPEN_MAX_ATTEMPTS = 5
+PROFILE_OPEN_RETRY_SECONDS = 0.8
 CONTRIBUTION_HEADER_Y_RANGE = (35, 120)
 TOP3_TARGETS = (
     (1, (362, 335)),
@@ -382,6 +388,12 @@ def _resolve_path(value: Any, default: Path) -> Path:
     return path.resolve()
 
 
+def _was_scanned_on(value: Any, scan_day: str) -> bool:
+    if not isinstance(value, dict):
+        return False
+    return str(value.get("scanned_at", ""))[:10] == scan_day
+
+
 def _should_save_level_samples(project_root: Path = PROJECT_ROOT) -> bool:
     """Keep unrecognized-level screenshots in source runs, not releases."""
     is_packaged_release = (project_root / "interface.json").is_file() and (
@@ -443,15 +455,15 @@ class ContributionScanner(CustomAction):
         max_halls = max(0, int(params.get("max_halls", 0)))
         max_hall_pages = max(1, int(params.get("max_hall_pages", 100)))
         max_contribution_pages = max(1, int(params.get("max_contribution_pages", 100)))
-        max_users_per_hall = max(0, int(params.get("max_users_per_hall", 0)))
+        # Keep the documented default as the final safety boundary even when
+        # a third-party runner invokes this custom action without UI options.
+        max_users_per_hall = max(1, int(params.get("max_users_per_hall", 30)))
         include_top3 = bool(params.get("include_top3", True))
         unknown_gender_as_male = bool(params.get("unknown_gender_as_male", False))
-
-        state = _load_json(state_path, {"visited_halls": {}})
-        visited_halls = state.setdefault("visited_halls", {})
-        if not isinstance(visited_halls, dict):
-            visited_halls = {}
-            state["visited_halls"] = visited_halls
+        single_hall = bool(params.get("single_hall", False))
+        skip_scanned_today = bool(params.get("skip_scanned_today", False)) or (
+            getattr(argv, "custom_action_name", "") == SKIP_SCANNED_CUSTOM_ACTION
+        )
 
         database = VoiceHallDatabase(output_path)
         database.initialize()
@@ -462,8 +474,58 @@ class ContributionScanner(CustomAction):
 
         self.controller = context.tasker.controller
         controller = self.controller
-        self._log("开始扫描，当前设备分辨率=", getattr(controller, "resolution", "unknown"))
+        self._log(
+            "开始扫描，当前设备分辨率=",
+            getattr(controller, "resolution", "unknown"),
+            f"每厅扫描上限={max_users_per_hall}",
+            f"跳过今日已扫描厅={skip_scanned_today}",
+        )
         self._check_stopping(context)
+
+        if single_hall:
+            room_id = _extract_hall_id(str(params.get("room_id", "")))
+            if room_id is None:
+                self._log("单厅调试缺少有效厅 ID，请填写 4 到 8 位数字")
+                return False
+            room_name = str(params.get("room_name") or room_id).strip() or room_id
+            _, items = self._capture_ocr(context)
+            if self._is_more_menu(items):
+                self.controller.post_click_key(4).wait()
+                self._sleep(context, delay)
+                _, items = self._capture_ocr(context)
+            if not (
+                self._is_room_page(items)
+                or self._is_contribution_panel(items)
+            ):
+                self._log(
+                    f"单厅调试未识别到厅 {room_id} 的房间页，"
+                    "请先手动进入目标厅再运行任务",
+                )
+                return False
+
+            self._log(f"开始单厅调试：厅 {room_name} ({room_id})")
+            opened = self._scan_contribution(
+                context=context,
+                room_id=room_id,
+                room_name=room_name,
+                output_path=output_path,
+                records=records,
+                processed_users=processed_users,
+                delay=delay,
+                max_pages=max_contribution_pages,
+                max_users=max_users_per_hall,
+                include_top3=include_top3,
+                unknown_gender_as_male=unknown_gender_as_male,
+            )
+            if opened:
+                self._log(f"单厅调试完成：厅 {room_id}，输出：{output_path}")
+            return opened
+
+        state = _load_json(state_path, {"visited_halls": {}})
+        visited_halls = state.setdefault("visited_halls", {})
+        if not isinstance(visited_halls, dict):
+            visited_halls = {}
+            state["visited_halls"] = visited_halls
 
         if not self._return_to_hall_list(context, max_attempts=5):
             self._log("没有回到厅列表页，任务结束")
@@ -471,6 +533,9 @@ class ContributionScanner(CustomAction):
 
         new_hall_count = 0
         page_signatures: set[tuple[str, ...]] = set()
+        scanned_this_run: set[str] = set()
+        scan_day = self._now()[:10]
+        needs_first_hall_warmup = True
 
         for _ in range(max_hall_pages):
             self._check_stopping(context)
@@ -494,17 +559,20 @@ class ContributionScanner(CustomAction):
                 break
             page_signatures.add(signature)
 
-            page_has_unvisited = False
             for candidate in hall_candidates:
                 self._check_stopping(context)
                 if max_halls and new_hall_count >= max_halls:
                     break
 
                 hall_id = str(candidate["hall_id"])
-                if hall_id in visited_halls:
+                if hall_id in scanned_this_run:
+                    continue
+                if skip_scanned_today and _was_scanned_on(
+                    visited_halls.get(hall_id), scan_day
+                ):
+                    self._log(f"厅 {hall_id} 今天已经扫描，按设置跳过")
                     continue
 
-                page_has_unvisited = True
                 hall_name = str(candidate.get("name") or hall_id)
                 self._log(f"进入厅 {hall_name} ({hall_id})")
 
@@ -519,7 +587,14 @@ class ContributionScanner(CustomAction):
                     self._return_to_hall_list(context, max_attempts=2)
                     continue
 
-                self._scan_contribution(
+                if needs_first_hall_warmup:
+                    self._log(
+                        f"厅 {hall_id} 是本次任务首个厅，等待房间页面完成初始化"
+                    )
+                    self._sleep(context, FIRST_HALL_WARMUP_SECONDS)
+                    needs_first_hall_warmup = False
+
+                opened = self._scan_contribution(
                     context=context,
                     room_id=hall_id,
                     room_name=hall_name,
@@ -533,12 +608,46 @@ class ContributionScanner(CustomAction):
                     unknown_gender_as_male=unknown_gender_as_male,
                 )
 
-                visited_halls[hall_id] = {
-                    "name": hall_name,
-                    "scanned_at": self._now(),
-                }
-                _write_json_atomic(state_path, state)
-                new_hall_count += 1
+                if not opened:
+                    self._log(
+                        f"厅 {hall_id} 首次打开贡献榜失败，退出并重新进入后重试一次"
+                    )
+                    returned = self._return_to_hall_list(context, max_attempts=4)
+                    reentered = returned and self._open_hall(
+                        context,
+                        int(candidate["card_y"]),
+                        delay,
+                    )
+                    if reentered:
+                        self._sleep(context, CONTRIBUTION_REENTRY_WARMUP_SECONDS)
+                        opened = self._scan_contribution(
+                            context=context,
+                            room_id=hall_id,
+                            room_name=hall_name,
+                            output_path=output_path,
+                            records=records,
+                            processed_users=processed_users,
+                            delay=delay,
+                            max_pages=max_contribution_pages,
+                            max_users=max_users_per_hall,
+                            include_top3=include_top3,
+                            unknown_gender_as_male=unknown_gender_as_male,
+                        )
+                    else:
+                        self._log(f"厅 {hall_id} 未能重新进入，取消本次重试")
+
+                if opened:
+                    visited_halls[hall_id] = {
+                        "name": hall_name,
+                        "scanned_at": self._now(),
+                    }
+                    _write_json_atomic(state_path, state)
+                    scanned_this_run.add(hall_id)
+                    new_hall_count += 1
+                else:
+                    self._log(
+                        f"厅 {hall_id} 重试后仍未完成贡献榜扫描，不记入已扫描状态"
+                    )
 
                 if not self._return_to_hall_list(context, max_attempts=4):
                     self._log("扫描后没有回到厅列表页，停止任务")
@@ -574,7 +683,7 @@ class ContributionScanner(CustomAction):
         max_users: int,
         include_top3: bool,
         unknown_gender_as_male: bool,
-    ) -> None:
+    ) -> bool:
         self._log(f"厅 {room_id} 正在打开贡献榜")
         self._open_contribution_panel(context, delay)
         seen_ranks: set[int] = set()
@@ -583,7 +692,7 @@ class ContributionScanner(CustomAction):
         for page_index in range(max_pages):
             self._check_stopping(context)
             self._log(f"厅 {room_id} 正在读取贡献榜第 {page_index + 1} 页")
-            _, items = self._capture_ocr(context)
+            image, items = self._capture_ocr(context)
             hierarchy = self._dump_ui_hierarchy()
             hierarchy_top3, hierarchy_rows = _find_contribution_targets(hierarchy)
             if not (
@@ -591,7 +700,8 @@ class ContributionScanner(CustomAction):
                 or _is_contribution_hierarchy(hierarchy)
             ):
                 self._log(f"厅 {room_id} 未打开贡献榜，跳过")
-                return
+                self._save_contribution_open_failure(image, hierarchy, room_id)
+                return False
             if not hierarchy_top3 and not hierarchy_rows:
                 self._log(
                     f"厅 {room_id} 第 {page_index + 1} 页结构读取失败，使用 OCR 兜底"
@@ -603,7 +713,7 @@ class ContributionScanner(CustomAction):
                     self._check_stopping(context)
                     if max_users and rank > max_users:
                         self._log(f"厅 {room_id} 已达到贡献榜前 {max_users} 名的扫描上限")
-                        return
+                        return True
                     self._log(f"厅 {room_id} 正在读取排名 {rank} 的用户")
                     self._record_user(
                         context=context,
@@ -619,7 +729,7 @@ class ContributionScanner(CustomAction):
                     )
                     if max_users and rank >= max_users:
                         self._log(f"厅 {room_id} 已完成贡献榜前 {max_users} 名的扫描")
-                        return
+                        return True
 
             rank_rows = hierarchy_rows or self._find_rank_rows(items)
             unopenable_ranks = _find_unopenable_contribution_ranks(hierarchy)
@@ -629,7 +739,7 @@ class ContributionScanner(CustomAction):
             fingerprint = tuple(rank for rank, _ in rank_rows)
             if not fingerprint or fingerprint in page_fingerprints:
                 self._log(f"厅 {room_id} 贡献榜已到底")
-                return
+                return True
             page_fingerprints.add(fingerprint)
 
             for rank, row_y in rank_rows:
@@ -639,12 +749,12 @@ class ContributionScanner(CustomAction):
                 seen_ranks.add(rank)
                 if max_users and rank > max_users:
                     self._log(f"厅 {room_id} 已达到贡献榜前 {max_users} 名的扫描上限")
-                    return
+                    return True
                 if rank in unopenable_ranks:
                     self._log(f"排名 {rank} 为神秘人，资料页不可访问，跳过")
                     if max_users and rank >= max_users:
                         self._log(f"厅 {room_id} 已完成贡献榜前 {max_users} 名的扫描")
-                        return
+                        return True
                     continue
                 self._log(f"厅 {room_id} 正在读取排名 {rank} 的用户")
                 self._record_user(
@@ -661,7 +771,7 @@ class ContributionScanner(CustomAction):
                 )
                 if max_users and rank >= max_users:
                     self._log(f"厅 {room_id} 已完成贡献榜前 {max_users} 名的扫描")
-                    return
+                    return True
 
             next_items = self._scroll_contribution(
                 context,
@@ -670,7 +780,8 @@ class ContributionScanner(CustomAction):
             )
             if next_items is None:
                 self._log(f"厅 {room_id} 贡献榜已到底或滑动未生效")
-                return
+                return True
+        return True
 
     def _scroll_contribution(
         self,
@@ -717,27 +828,29 @@ class ContributionScanner(CustomAction):
     ) -> bool:
         self._check_stopping(context)
         self.controller.post_click(click_point[0], click_point[1]).wait()
-        self._sleep(context, delay)
+        self._sleep(context, max(delay, PROFILE_OPEN_RETRY_SECONDS))
 
         self._last_profile_hierarchy = ""
+        profile_image, profile_items = self._wait_for_profile_page(context)
         user_id = self._copy_profile_id(context)
-        profile_image = None
-        profile_items: list[Any] = []
-        for _ in range(3):
-            profile_image, profile_items = self._capture_ocr(context)
-            if profile_items:
-                break
-            self._sleep(context, 0.5)
 
         # Some leaderboard users do not expose a profile even though Android
-        # reports their avatar as clickable.  Do not interpret leaderboard
-        # IDs as profile data or press Back in that state: Back would close
-        # the contribution panel and make the next scroll look like the end.
-        if self._is_contribution_panel(profile_items) or _is_contribution_hierarchy(
-            self._last_profile_hierarchy
+        # reports their avatar as clickable. Wait for slow transitions before
+        # deciding that the click did not open anything. Do not press Back in
+        # the confirmed leaderboard state: it would close the contribution
+        # panel and make the next scroll look like the end.
+        if (
+            not user_id
+            and (
+                self._is_contribution_panel(profile_items)
+                or _is_contribution_hierarchy(self._last_profile_hierarchy)
+            )
         ):
             self._log(f"排名 {rank} 的头像点击后仍在贡献榜，跳过")
             return False
+
+        if not profile_items:
+            profile_image, profile_items = self._capture_ocr(context)
 
         if not user_id:
             user_id = self._extract_profile_id(profile_items)
@@ -841,6 +954,21 @@ class ContributionScanner(CustomAction):
         )
         return True
 
+    def _wait_for_profile_page(
+        self,
+        context: Context,
+    ) -> tuple[Any, list[Any]]:
+        image = None
+        items: list[Any] = []
+        for attempt in range(PROFILE_OPEN_MAX_ATTEMPTS):
+            self._check_stopping(context)
+            image, items = self._capture_ocr(context)
+            if self._is_profile_page(items):
+                return image, items
+            if attempt + 1 < PROFILE_OPEN_MAX_ATTEMPTS:
+                self._sleep(context, PROFILE_OPEN_RETRY_SECONDS)
+        return image, items
+
     def _save_level_sample(
         self,
         image: Any,
@@ -884,6 +1012,41 @@ class ContributionScanner(CustomAction):
         except (OSError, TypeError, ValueError, cv2.error) as exc:
             self._log(f"等级识别样本保存失败：{exc}")
             return None
+
+    def _save_contribution_open_failure(
+        self,
+        image: Any,
+        hierarchy: str,
+        room_id: str,
+    ) -> None:
+        try:
+            DEFAULT_OPEN_FAILURE_DIR.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now(CHINA_TZ).strftime("%Y.%m.%d-%H.%M.%S.%f")[:-3]
+            safe_room_id = re.sub(r"[^0-9A-Za-z_-]", "_", room_id)
+            prefix = DEFAULT_OPEN_FAILURE_DIR / (
+                f"{timestamp}_ContributionPanel_{safe_room_id}"
+            )
+            saved: list[str] = []
+
+            pixels = np.asarray(image) if image is not None else np.asarray([])
+            if pixels.size and pixels.ndim in (2, 3):
+                if pixels.dtype != np.uint8:
+                    pixels = np.clip(pixels, 0, 255).astype(np.uint8)
+                success, encoded = cv2.imencode(".png", pixels)
+                if success:
+                    screenshot_path = prefix.with_suffix(".png")
+                    encoded.tofile(screenshot_path)
+                    saved.append(str(screenshot_path.relative_to(PROJECT_ROOT)))
+
+            if hierarchy:
+                hierarchy_path = prefix.with_suffix(".xml")
+                hierarchy_path.write_text(hierarchy, encoding="utf-8")
+                saved.append(str(hierarchy_path.relative_to(PROJECT_ROOT)))
+
+            if saved:
+                self._log("贡献榜打开失败现场已保存：", ", ".join(saved))
+        except (OSError, TypeError, ValueError, cv2.error) as exc:
+            self._log(f"贡献榜打开失败现场保存失败：{exc}")
 
     def _copy_profile_id(self, context: Context | None = None) -> str | None:
         if context is not None:
@@ -1743,7 +1906,16 @@ class ContributionScanner(CustomAction):
         has_profile_info = any(
             "粉丝" in text or PROFILE_IP_RE.search(text) for text in texts
         )
-        return has_header and has_profile_info
+        joined_text = " ".join(texts)
+        profile_tab_count = sum(
+            label in joined_text for label in ("挚友", "礼物墙", "装扮展馆")
+        )
+        has_profile_action = any(
+            "关注" in text or "编辑资料" in text for text in texts
+        )
+        return (has_header and has_profile_info) or (
+            profile_tab_count >= 2 and has_profile_action
+        )
 
     @staticmethod
     def _now() -> str:
@@ -1784,4 +1956,9 @@ class ContributionScanner(CustomAction):
 
 @AgentServer.custom_action("scan_voice_hall_contributions")
 class VoiceHallContributionAction(ContributionScanner):
+    pass
+
+
+@AgentServer.custom_action(SKIP_SCANNED_CUSTOM_ACTION)
+class VoiceHallSkipScannedContributionAction(ContributionScanner):
     pass

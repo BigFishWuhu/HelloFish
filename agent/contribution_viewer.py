@@ -1,8 +1,13 @@
+import argparse
 import csv
 import io
 import json
+import os
 import sqlite3
+import subprocess
+import sys
 import threading
+import time
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -10,7 +15,9 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.error import URLError
 from urllib.parse import parse_qs, urlparse
+from urllib.request import urlopen
 
 from voice_hall_storage import VoiceHallDatabase
 
@@ -22,6 +29,9 @@ DEFAULT_WEB_ROOT = PROJECT_ROOT / "web" / "contributions"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_URL = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}/"
+DEFAULT_HEALTH_URL = f"{DEFAULT_URL}api/health"
+DEFAULT_LOG = PROJECT_ROOT / "data" / "contribution_viewer.log"
+HEALTH_RESPONSE = {"service": "HelloFishContributionViewer"}
 MAX_PAGE_SIZE = 200
 EXPORT_COLUMNS = {
     "scanned_at": "扫描时间",
@@ -419,7 +429,7 @@ class ContributionViewerHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         try:
             if parsed.path == "/api/health":
-                self._send_json(HTTPStatus.OK, {"service": "HelloFishContributionViewer"})
+                self._send_json(HTTPStatus.OK, HEALTH_RESPONSE)
                 return
             if parsed.path == "/api/settings":
                 self._send_json(HTTPStatus.OK, load_settings(self.server.settings_path))
@@ -523,3 +533,146 @@ def ensure_server(
         _SERVER = server
         _SERVER_THREAD = thread
         return server
+
+
+def is_server_running(
+    health_url: str = DEFAULT_HEALTH_URL,
+    timeout: float = 0.5,
+) -> bool:
+    try:
+        with urlopen(health_url, timeout=timeout) as response:  # noqa: S310
+            return response.status == HTTPStatus.OK and json.load(response) == HEALTH_RESPONSE
+    except (OSError, URLError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def start_background_server(
+    owner_pid: int | None = None,
+    *,
+    startup_timeout: float = 5.0,
+    log_path: Path = DEFAULT_LOG,
+) -> bool:
+    """Start the viewer outside the Maa Agent process.
+
+    The returned boolean is true when this call launched the process and false
+    when a healthy viewer was already listening. The worker watches MXU's PID,
+    so stopping a Maa task does not stop the viewer, while closing MXU does.
+    """
+    if is_server_running():
+        return False
+
+    parent_pid = owner_pid if owner_pid is not None else os.getppid()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        sys.executable,
+        "-u",
+        str(Path(__file__).resolve()),
+        "--serve",
+        "--owner-pid",
+        str(parent_pid),
+    ]
+    popen_options: dict[str, Any] = {
+        "cwd": str(PROJECT_ROOT),
+        "env": {**os.environ, "PYTHONIOENCODING": "utf-8"},
+        "stdin": subprocess.DEVNULL,
+        "stderr": subprocess.STDOUT,
+        "close_fds": True,
+    }
+    if os.name == "nt":
+        popen_options["creationflags"] = (
+            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+        )
+    else:
+        popen_options["start_new_session"] = True
+
+    with log_path.open("a", encoding="utf-8") as log_file:
+        process = subprocess.Popen(command, stdout=log_file, **popen_options)
+
+    deadline = time.monotonic() + startup_timeout
+    while time.monotonic() < deadline:
+        if is_server_running():
+            return True
+        if process.poll() is not None:
+            break
+        time.sleep(0.05)
+    raise RuntimeError(f"贡献记录后台服务启动失败，请查看日志：{log_path}")
+
+
+def _process_exists(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        open_process = kernel32.OpenProcess
+        open_process.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        open_process.restype = wintypes.HANDLE
+        wait_for_single_object = kernel32.WaitForSingleObject
+        wait_for_single_object.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        wait_for_single_object.restype = wintypes.DWORD
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = (wintypes.HANDLE,)
+        close_handle.restype = wintypes.BOOL
+
+        synchronize = 0x00100000
+        wait_timeout = 0x00000102
+        error_access_denied = 5
+        handle = open_process(synchronize, False, pid)
+        if not handle:
+            return ctypes.get_last_error() == error_access_denied
+        try:
+            return wait_for_single_object(handle, 0) == wait_timeout
+        finally:
+            close_handle(handle)
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def serve_until_owner_exits(
+    owner_pid: int | None,
+    database_path: Path = DEFAULT_DATABASE,
+    settings_path: Path = DEFAULT_SETTINGS,
+    web_root: Path = DEFAULT_WEB_ROOT,
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+) -> None:
+    if not web_root.joinpath("index.html").is_file():
+        raise FileNotFoundError(f"未找到贡献记录网页：{web_root}")
+    server = ContributionViewerServer(
+        (host, port),
+        database_path,
+        settings_path,
+        web_root,
+    )
+    print(f"[ContributionViewer] 后台服务已启动：{DEFAULT_URL}", flush=True)
+    try:
+        if owner_pid is None:
+            server.serve_forever()
+            return
+        server.timeout = 1
+        while _process_exists(owner_pid):
+            server.handle_request()
+    finally:
+        server.server_close()
+        print("[ContributionViewer] MXU 已退出，后台服务已停止", flush=True)
+
+
+def _main() -> None:
+    parser = argparse.ArgumentParser(description="HelloFish contribution viewer")
+    parser.add_argument("--serve", action="store_true", help="run the HTTP service")
+    parser.add_argument("--owner-pid", type=int, help="exit when this process exits")
+    args = parser.parse_args()
+    if not args.serve:
+        parser.error("需要指定 --serve")
+    serve_until_owner_exits(args.owner_pid)
+
+
+if __name__ == "__main__":
+    _main()

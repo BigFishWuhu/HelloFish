@@ -10,6 +10,22 @@
             "max_hall_pages": 100,
             "max_contribution_pages": 100,
             "max_users_per_hall": 30,
+            "skip_scanned_today": false,
+            "include_top3": true,
+            "unknown_gender_as_male": false,
+            "action_delay": 0.8
+        }
+    },
+    "VoiceHallSingleDebugStart": {
+        "recognition": "DirectHit",
+        "action": "Custom",
+        "custom_action": "scan_voice_hall_contributions",
+        "custom_action_param": {
+            "database": "data/voice_hall.sqlite3",
+            "single_hall": true,
+            "room_id": "",
+            "max_contribution_pages": 100,
+            "max_users_per_hall": 30,
             "include_top3": true,
             "unknown_gender_as_male": false,
             "action_delay": 0.8

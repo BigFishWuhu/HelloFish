@@ -24,6 +24,7 @@ from voice_hall import (  # noqa: E402
     _find_profile_copy_target,
     _is_contribution_hierarchy,
     _should_save_level_samples,
+    _was_scanned_on,
 )
 from voice_hall_storage import VoiceHallDatabase  # noqa: E402
 from wealth_levels import (  # noqa: E402
@@ -1041,6 +1042,68 @@ class HallListRecognitionTest(unittest.TestCase):
         upsert_database.assert_not_called()
         log.assert_called_once_with("排名 14 的头像点击后仍在贡献榜，跳过")
 
+    def test_record_user_waits_for_delayed_profile_page(self) -> None:
+        leaderboard = [ocr("房间贡献榜", (330, 55, 150, 35))]
+        loading_profile = [ocr("游客", (300, 260, 80, 30))]
+        loaded_profile = [
+            ocr("挚友 礼物墙 装扮展馆", (20, 980, 460, 32)),
+            ocr("关注", (560, 700, 90, 38)),
+        ]
+
+        with (
+            patch.object(
+                self.scanner,
+                "_capture_ocr",
+                side_effect=[
+                    (None, leaderboard),
+                    (None, loading_profile),
+                    (None, loaded_profile),
+                ],
+            ) as capture,
+            patch.object(self.scanner, "_sleep") as sleep,
+        ):
+            image, items = self.scanner._wait_for_profile_page(SimpleNamespace())
+
+        self.assertIsNone(image)
+        self.assertIs(items, loaded_profile)
+        self.assertEqual(capture.call_count, 3)
+        self.assertEqual(
+            [call.args[1] for call in sleep.call_args_list],
+            [0.8, 0.8],
+        )
+
+    def test_partial_profile_page_is_recognized_for_back_navigation(self) -> None:
+        controller = FakeController()
+        self.scanner.controller = controller
+        items = [
+            ocr("挚友 礼物墙 装扮展馆", (20, 980, 460, 32)),
+            ocr("解锁挚友位", (220, 1040, 180, 32)),
+            ocr("关注", (560, 700, 90, 38)),
+            ocr("游客", (300, 260, 80, 30)),
+        ]
+
+        self.assertTrue(self.scanner._is_profile_page(items))
+        with (
+            patch.object(
+                self.scanner,
+                "_capture_ocr",
+                side_effect=[(None, items), (None, [])],
+            ),
+            patch.object(
+                self.scanner,
+                "_is_hall_list",
+                side_effect=[False, True],
+            ),
+            patch.object(self.scanner, "_sleep"),
+        ):
+            returned = self.scanner._return_to_hall_list(
+                SimpleNamespace(),
+                max_attempts=2,
+            )
+
+        self.assertTrue(returned)
+        self.assertEqual(controller.clicks, [("key", 4)])
+
     def test_contribution_scan_skips_unopenable_mystery_user(self) -> None:
         controller = FakeController()
         self.scanner.controller = controller
@@ -1164,6 +1227,30 @@ class HallListRecognitionTest(unittest.TestCase):
         )
         scroll.assert_not_called()
 
+    def test_missing_rank_limit_uses_safe_default_of_30(self) -> None:
+        context = SimpleNamespace(
+            tasker=SimpleNamespace(
+                controller=FakeController(),
+                stopping=False,
+            )
+        )
+        argv = SimpleNamespace(
+            custom_action_param=json.dumps({"skip_scanned_today": False})
+        )
+        with (
+            patch.object(self.scanner, "_return_to_hall_list", return_value=False),
+            patch.object(self.scanner, "_log") as log,
+        ):
+            self.assertFalse(self.scanner._run(context, argv))
+
+        self.assertTrue(
+            any(
+                "每厅扫描上限=30" in str(argument)
+                for call in log.call_args_list
+                for argument in call.args
+            )
+        )
+
     def test_interface_defaults_contribution_rank_limit_to_30(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         interface = json.loads(
@@ -1184,12 +1271,34 @@ class HallListRecognitionTest(unittest.TestCase):
         )
         rank_limit = interface["option"]["ContributionRankLimit"]
         self.assertIn("ContributionRankLimit", scan_task["option"])
+        self.assertIn("SkipScannedToday", scan_task["option"])
         self.assertEqual(rank_limit["inputs"][0]["default"], "30")
         self.assertEqual(
             pipeline["VoiceHallScanStart"]["custom_action_param"][
                 "max_users_per_hall"
             ],
             30,
+        )
+        skip_today = interface["option"]["SkipScannedToday"]
+        self.assertEqual(skip_today["default_case"], "No")
+        self.assertEqual(
+            rank_limit["pipeline_override"].keys(),
+            {"VoiceHallScanStart"},
+        )
+        self.assertEqual(
+            rank_limit["pipeline_override"]["VoiceHallScanStart"]
+            ["custom_action_param"]["max_users_per_hall"],
+            "{limit}",
+        )
+        for case in skip_today["cases"]:
+            self.assertEqual(
+                case["pipeline_override"].keys(),
+                {"VoiceHallScanStart"},
+            )
+        self.assertEqual(
+            skip_today["cases"][0]["pipeline_override"]["VoiceHallScanStart"]
+            ["custom_action"],
+            "scan_voice_hall_contributions_skip_scanned",
         )
         self.assertIn(
             "[查看贡献记录](http://127.0.0.1:8765/)",
@@ -1200,6 +1309,306 @@ class HallListRecognitionTest(unittest.TestCase):
             {task["entry"] for task in interface["task"]},
         )
         self.assertNotIn("OpenContributionViewer", pipeline)
+
+    def test_scanned_hall_state_only_matches_the_same_day(self) -> None:
+        state = {"scanned_at": "2026-09-14T23:59:59+08:00"}
+
+        self.assertTrue(_was_scanned_on(state, "2026-09-14"))
+        self.assertFalse(_was_scanned_on(state, "2026-09-15"))
+        self.assertFalse(_was_scanned_on({}, "2026-09-14"))
+        self.assertFalse(_was_scanned_on("2026-09-14", "2026-09-14"))
+
+    def test_interface_exposes_single_hall_debug_task(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        interface = json.loads(
+            (project_root / "assets" / "interface.json").read_text(encoding="utf-8")
+        )
+        pipeline = json.loads(
+            (
+                project_root
+                / "assets"
+                / "resource"
+                / "pipeline"
+                / "my_task.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        debug_task = next(
+            task
+            for task in interface["task"]
+            if task["entry"] == "VoiceHallSingleDebugStart"
+        )
+        self.assertFalse(debug_task["default_check"])
+        self.assertEqual(
+            debug_task["option"],
+            ["SingleHallDebugConfig"],
+        )
+        debug_option = interface["option"]["SingleHallDebugConfig"]
+        self.assertEqual(
+            debug_option["pipeline_override"]["VoiceHallSingleDebugStart"]
+            ["custom_action_param"]["room_id"],
+            "{hall_id}",
+        )
+        self.assertTrue(
+            debug_option["pipeline_override"]["VoiceHallSingleDebugStart"]
+            ["custom_action_param"]["single_hall"]
+        )
+        self.assertEqual(
+            debug_option["pipeline_override"]["VoiceHallSingleDebugStart"]
+            ["custom_action_param"]["max_users_per_hall"],
+            "{limit}",
+        )
+        debug_params = pipeline["VoiceHallSingleDebugStart"]["custom_action_param"]
+        self.assertTrue(debug_params["single_hall"])
+        self.assertEqual(debug_params["max_users_per_hall"], 30)
+
+    def test_entry_rank_limit_and_skip_action_are_combined(self) -> None:
+        context = SimpleNamespace(
+            tasker=SimpleNamespace(
+                controller=FakeController(),
+                stopping=False,
+            ),
+        )
+        argv = SimpleNamespace(
+            custom_action_param=json.dumps({"max_users_per_hall": 5}),
+            custom_action_name="scan_voice_hall_contributions_skip_scanned",
+        )
+        with (
+            patch.object(self.scanner, "_return_to_hall_list", return_value=False),
+            patch.object(self.scanner, "_log") as log,
+        ):
+            self.assertFalse(self.scanner._run(context, argv))
+
+        self.assertTrue(
+            any(
+                "每厅扫描上限=5" in str(argument)
+                and "跳过今日已扫描厅=True" in str(call.args)
+                for call in log.call_args_list
+                for argument in call.args
+            )
+        )
+
+    def test_single_hall_debug_scans_current_room_without_hall_list_state(self) -> None:
+        controller = FakeController()
+        context = SimpleNamespace(
+            tasker=SimpleNamespace(controller=controller, stopping=False)
+        )
+        room_items = [
+            ocr("公告", (48, 141, 55, 25)),
+            ocr("聊聊天", (33, 1201, 79, 33)),
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = Path(temp_dir) / "voice_hall.sqlite3"
+            state_path = Path(temp_dir) / "state.json"
+            argv = SimpleNamespace(
+                custom_action_param=json.dumps(
+                    {
+                        "database": str(database_path),
+                        "state_file": str(state_path),
+                        "single_hall": True,
+                        "room_id": "１２３４５",
+                        "max_users_per_hall": 12,
+                        "action_delay": 0,
+                    }
+                )
+            )
+            with (
+                patch.object(
+                    self.scanner,
+                    "_capture_ocr",
+                    return_value=(None, room_items),
+                ),
+                patch.object(
+                    self.scanner,
+                    "_scan_contribution",
+                    return_value=True,
+                ) as scan,
+                patch.object(self.scanner, "_return_to_hall_list") as return_to_list,
+                patch.object(self.scanner, "_log"),
+            ):
+                result = self.scanner._run(context, argv)
+
+            self.assertTrue(result)
+            return_to_list.assert_not_called()
+            self.assertFalse(state_path.exists())
+            self.assertEqual(scan.call_args.kwargs["room_id"], "12345")
+            self.assertEqual(scan.call_args.kwargs["room_name"], "12345")
+            self.assertEqual(scan.call_args.kwargs["max_users"], 12)
+
+    def test_regular_scan_retries_recorded_hall_and_preserves_state_on_failure(self) -> None:
+        controller = FakeController()
+        context = SimpleNamespace(
+            tasker=SimpleNamespace(controller=controller, stopping=False)
+        )
+        candidate = {"hall_id": "12345", "name": "测试厅", "card_y": 300}
+        hall_list_items = [ocr("聊天室", (20, 1180, 100, 30))]
+        room_items = [
+            ocr("公告", (48, 141, 55, 25)),
+            ocr("聊聊天", (33, 1201, 79, 33)),
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = Path(temp_dir) / "voice_hall.sqlite3"
+            state_path = Path(temp_dir) / "state.json"
+            existing_state = {
+                "visited_halls": {
+                    "12345": {
+                        "name": "测试厅",
+                        "scanned_at": "2026-09-14T08:00:00+08:00",
+                    }
+                }
+            }
+            state_path.write_text(
+                json.dumps(existing_state, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            argv = SimpleNamespace(
+                custom_action_param=json.dumps(
+                    {
+                        "database": str(database_path),
+                        "state_file": str(state_path),
+                        "max_hall_pages": 1,
+                        "action_delay": 0,
+                    }
+                )
+            )
+            with (
+                patch.object(
+                    self.scanner,
+                    "_capture_ocr",
+                    side_effect=[
+                        (None, hall_list_items),
+                        (None, room_items),
+                        (None, hall_list_items),
+                    ],
+                ),
+                patch.object(self.scanner, "_return_to_hall_list", return_value=True),
+                patch.object(self.scanner, "_is_hall_list", return_value=True),
+                patch.object(
+                    self.scanner,
+                    "_find_hall_candidates",
+                    return_value=[candidate],
+                ),
+                patch.object(
+                    self.scanner,
+                    "_open_hall",
+                    return_value=True,
+                ) as enter,
+                patch.object(
+                    self.scanner,
+                    "_scan_contribution",
+                    side_effect=[False, False],
+                ) as scan,
+                patch.object(self.scanner, "_scroll_hall_list"),
+                patch.object(self.scanner, "_sleep") as sleep,
+                patch.object(self.scanner, "_log"),
+            ):
+                result = self.scanner._run(context, argv)
+
+            self.assertTrue(result)
+            self.assertEqual(scan.call_count, 2)
+            self.assertEqual(enter.call_count, 2)
+            self.assertEqual(
+                [call.args[1] for call in sleep.call_args_list],
+                [3.0, 1.5],
+            )
+            self.assertEqual(
+                json.loads(state_path.read_text(encoding="utf-8")),
+                existing_state,
+            )
+
+    def test_regular_scan_records_hall_when_reentry_retry_succeeds(self) -> None:
+        controller = FakeController()
+        context = SimpleNamespace(
+            tasker=SimpleNamespace(controller=controller, stopping=False)
+        )
+        candidate = {"hall_id": "12345", "name": "测试厅", "card_y": 300}
+        hall_list_items = [ocr("聊天室", (20, 1180, 100, 30))]
+        room_items = [
+            ocr("公告", (48, 141, 55, 25)),
+            ocr("聊聊天", (33, 1201, 79, 33)),
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = Path(temp_dir) / "voice_hall.sqlite3"
+            state_path = Path(temp_dir) / "state.json"
+            argv = SimpleNamespace(
+                custom_action_param=json.dumps(
+                    {
+                        "database": str(database_path),
+                        "state_file": str(state_path),
+                        "max_hall_pages": 1,
+                        "action_delay": 0,
+                    }
+                )
+            )
+            with (
+                patch.object(
+                    self.scanner,
+                    "_capture_ocr",
+                    side_effect=[
+                        (None, hall_list_items),
+                        (None, room_items),
+                        (None, hall_list_items),
+                    ],
+                ),
+                patch.object(self.scanner, "_return_to_hall_list", return_value=True),
+                patch.object(self.scanner, "_is_hall_list", return_value=True),
+                patch.object(
+                    self.scanner,
+                    "_find_hall_candidates",
+                    return_value=[candidate],
+                ),
+                patch.object(self.scanner, "_open_hall", return_value=True) as enter,
+                patch.object(
+                    self.scanner,
+                    "_scan_contribution",
+                    side_effect=[False, True],
+                ) as scan,
+                patch.object(self.scanner, "_scroll_hall_list"),
+                patch.object(self.scanner, "_sleep"),
+                patch.object(self.scanner, "_now", return_value="2026-09-14T20:30:00+08:00"),
+                patch.object(self.scanner, "_log"),
+            ):
+                result = self.scanner._run(context, argv)
+
+            self.assertTrue(result)
+            self.assertEqual(scan.call_count, 2)
+            self.assertEqual(enter.call_count, 2)
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                state["visited_halls"]["12345"]["scanned_at"],
+                "2026-09-14T20:30:00+08:00",
+            )
+
+    def test_contribution_scan_reports_panel_open_failure(self) -> None:
+        with (
+            patch.object(self.scanner, "_open_contribution_panel"),
+            patch.object(self.scanner, "_capture_ocr", return_value=(None, [])),
+            patch.object(self.scanner, "_dump_ui_hierarchy", return_value=""),
+            patch.object(
+                self.scanner,
+                "_save_contribution_open_failure",
+            ) as save_failure,
+            patch.object(self.scanner, "_log"),
+        ):
+            opened = self.scanner._scan_contribution(
+                context=SimpleNamespace(),
+                room_id="12345",
+                room_name="测试厅",
+                output_path=Path("unused.sqlite3"),
+                records=[],
+                processed_users=set(),
+                delay=0,
+                max_pages=1,
+                max_users=30,
+                include_top3=True,
+                unknown_gender_as_male=False,
+            )
+
+        self.assertFalse(opened)
+        save_failure.assert_called_once_with(None, "", "12345")
 
     def test_open_contribution_does_not_click_default_filters(self) -> None:
         controller = FakeController()

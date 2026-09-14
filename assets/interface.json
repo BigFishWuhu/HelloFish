@@ -33,9 +33,19 @@
             "name": "语音厅贡献榜扫描",
             "entry": "VoiceHallScanStart",
             "default_check": true,
-            "description": "采集完成后可随时[查看贡献记录](http://127.0.0.1:8765/)，无需运行额外任务。",
+            "description": "首次启动任务后，可在退出 MXU 前随时[查看贡献记录](http://127.0.0.1:8765/)；停止任务不会关闭页面。",
             "option": [
-                "ContributionRankLimit"
+                "ContributionRankLimit",
+                "SkipScannedToday"
+            ]
+        },
+        {
+            "name": "单厅贡献榜调试",
+            "entry": "VoiceHallSingleDebugStart",
+            "default_check": false,
+            "description": "用于反复调试打不开贡献榜的厅。运行前请先手动进入目标厅并填写厅 ID；该任务不会读取或写入已扫描厅状态。",
+            "option": [
+                "SingleHallDebugConfig"
             ]
         }
     ],
@@ -61,6 +71,64 @@
                     }
                 }
             }
+        },
+        "SingleHallDebugConfig": {
+            "type": "input",
+            "label": "单厅调试配置",
+            "description": "先手动进入目标厅，再填写厅 ID 和扫描人数。",
+            "inputs": [
+                {
+                    "name": "hall_id",
+                    "label": "厅 ID",
+                    "default": "",
+                    "pipeline_type": "string",
+                    "verify": "^\\d{4,8}$",
+                    "pattern_msg": "请输入 4 到 8 位数字厅 ID。"
+                },
+                {
+                    "name": "limit",
+                    "label": "前 N 名",
+                    "default": "30",
+                    "pipeline_type": "int",
+                    "verify": "^[1-9]\\d{0,2}$",
+                    "pattern_msg": "请输入 1 到 999 的整数。"
+                }
+            ],
+            "pipeline_override": {
+                "VoiceHallSingleDebugStart": {
+                    "custom_action_param": {
+                        "room_id": "{hall_id}",
+                        "single_hall": true,
+                        "max_users_per_hall": "{limit}"
+                    }
+                }
+            }
+        },
+        "SkipScannedToday": {
+            "type": "switch",
+            "label": "跳过今天已扫描的厅",
+            "description": "开启后仅跳过今天成功扫描过的厅；昨天及更早扫描过的厅仍会正常扫描。",
+            "cases": [
+                {
+                    "name": "Yes",
+                    "label": "开启",
+                    "pipeline_override": {
+                        "VoiceHallScanStart": {
+                            "custom_action": "scan_voice_hall_contributions_skip_scanned"
+                        }
+                    }
+                },
+                {
+                    "name": "No",
+                    "label": "关闭",
+                    "pipeline_override": {
+                        "VoiceHallScanStart": {
+                            "custom_action": "scan_voice_hall_contributions"
+                        }
+                    }
+                }
+            ],
+            "default_case": "No"
         }
     }
 }
