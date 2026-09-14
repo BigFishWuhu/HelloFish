@@ -32,6 +32,10 @@ on:
       - "**.py"
   workflow_dispatch:
 
+permissions:
+  contents: write
+  pull-requests: read
+
 jobs:
   meta:
     runs-on: ubuntu-latest
@@ -161,6 +165,7 @@ jobs:
         id: git-cliff
         with:
           config: .github/cliff.toml
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           # 正式版：使用 tag-pattern 只匹配正式版标签，包含所有从上一个正式版以来的提交
           # 预发布版：正常生成，只包含从上一个标签以来的提交
           args: >-
