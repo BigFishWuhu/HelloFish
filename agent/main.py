@@ -14,6 +14,7 @@ if packaged_maafw.is_dir():
 from maa.agent.agent_server import AgentServer
 from maa.toolkit import Toolkit
 
+import contribution_viewer
 import my_action
 import my_reco
 import voice_hall

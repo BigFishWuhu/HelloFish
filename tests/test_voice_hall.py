@@ -23,6 +23,7 @@ from voice_hall import (  # noqa: E402
     _find_contribution_targets,
     _find_profile_copy_target,
     _is_contribution_hierarchy,
+    _should_save_level_samples,
 )
 from voice_hall_storage import VoiceHallDatabase  # noqa: E402
 from wealth_levels import (  # noqa: E402
@@ -899,6 +900,16 @@ class HallListRecognitionTest(unittest.TestCase):
                 ["wealth_level", "charm_level"],
             )
 
+    def test_packaged_release_does_not_save_unrecognized_level_samples(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            self.assertTrue(_should_save_level_samples(project_root))
+
+            (project_root / "interface.json").write_text("{}", encoding="utf-8")
+            (project_root / "maafw").mkdir()
+
+            self.assertFalse(_should_save_level_samples(project_root))
+
     def test_wealth_level_mapping_covers_all_levels_and_boundaries(self) -> None:
         self.assertEqual(len(WEALTH_LEVEL_MIN_CONTRIBUTIONS), 301)
         self.assertEqual(minimum_contribution_for_wealth_level(77), 95_000)
@@ -989,6 +1000,96 @@ class HallListRecognitionTest(unittest.TestCase):
 
         self.assertIs(result, next_page)
         self.assertEqual(controller.swipes, [(650, 1040, 650, 650, 700)])
+
+    def test_contribution_scan_stops_at_configured_rank_limit(self) -> None:
+        controller = FakeController()
+        self.scanner.controller = controller
+        hierarchy = """<?xml version='1.0'?>
+        <hierarchy>
+          <node text="房间贡献榜" resource-id="" selected="true"
+                bounds="[333,55][463,95]" />
+          <node text="" resource-id="app:id/iv_avatar_rank_1"
+                bounds="[301,267][420,386]" />
+          <node text="" resource-id="app:id/iv_avatar_rank_2"
+                bounds="[83,290][179,386]" />
+          <node text="" resource-id="app:id/iv_avatar_rank_3"
+                bounds="[543,290][639,386]" />
+          <node text="" resource-id="app:id/rv_rank_list"
+                bounds="[0,547][720,1126]" />
+          <node text="4" resource-id="app:id/tv_rank"
+                bounds="[13,595][94,627]" />
+          <node text="" resource-id="app:id/iv_avatar"
+                bounds="[94,574][167,647]" />
+          <node text="5" resource-id="app:id/tv_rank"
+                bounds="[13,695][94,727]" />
+          <node text="" resource-id="app:id/iv_avatar"
+                bounds="[94,674][167,747]" />
+        </hierarchy>"""
+
+        with (
+            patch.object(self.scanner, "_open_contribution_panel"),
+            patch.object(
+                self.scanner,
+                "_capture_ocr",
+                return_value=(None, [ocr("房间贡献榜", (330, 55, 150, 35))]),
+            ),
+            patch.object(self.scanner, "_dump_ui_hierarchy", return_value=hierarchy),
+            patch.object(self.scanner, "_record_user") as record_user,
+            patch.object(self.scanner, "_scroll_contribution") as scroll,
+            patch.object(self.scanner, "_log"),
+        ):
+            self.scanner._scan_contribution(
+                context=SimpleNamespace(),
+                room_id="120323",
+                room_name="测试厅",
+                output_path=Path("result.sqlite3"),
+                records=[],
+                processed_users={
+                    ("120323", "historical-1"),
+                    ("120323", "historical-2"),
+                    ("120323", "historical-3"),
+                    ("120323", "historical-4"),
+                },
+                delay=0.1,
+                max_pages=100,
+                max_users=4,
+                include_top3=True,
+                unknown_gender_as_male=False,
+            )
+
+        self.assertEqual(
+            [call.kwargs["rank"] for call in record_user.call_args_list],
+            [1, 2, 3, 4],
+        )
+        scroll.assert_not_called()
+
+    def test_interface_defaults_contribution_rank_limit_to_30(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        interface = json.loads(
+            (project_root / "assets" / "interface.json").read_text(encoding="utf-8")
+        )
+        pipeline = json.loads(
+            (
+                project_root
+                / "assets"
+                / "resource"
+                / "pipeline"
+                / "my_task.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        scan_task = next(
+            task for task in interface["task"] if task["entry"] == "VoiceHallScanStart"
+        )
+        rank_limit = interface["option"]["ContributionRankLimit"]
+        self.assertIn("ContributionRankLimit", scan_task["option"])
+        self.assertEqual(rank_limit["inputs"][0]["default"], "30")
+        self.assertEqual(
+            pipeline["VoiceHallScanStart"]["custom_action_param"][
+                "max_users_per_hall"
+            ],
+            30,
+        )
 
     def test_open_contribution_does_not_click_default_filters(self) -> None:
         controller = FakeController()

@@ -9,10 +9,20 @@
             "max_halls": 0,
             "max_hall_pages": 100,
             "max_contribution_pages": 100,
-            "max_users_per_hall": 0,
+            "max_users_per_hall": 30,
             "include_top3": true,
             "unknown_gender_as_male": false,
             "action_delay": 0.8
+        }
+    },
+    "OpenContributionViewer": {
+        "recognition": "DirectHit",
+        "action": "Custom",
+        "custom_action": "open_contribution_viewer",
+        "custom_action_param": {
+            "database": "data/voice_hall.sqlite3",
+            "settings": "data/contribution_viewer_settings.json",
+            "web_root": "web/contributions"
         }
     },
     "OCRFull": {

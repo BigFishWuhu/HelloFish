@@ -352,6 +352,14 @@ def _resolve_path(value: Any, default: Path) -> Path:
     return path.resolve()
 
 
+def _should_save_level_samples(project_root: Path = PROJECT_ROOT) -> bool:
+    """Keep unrecognized-level screenshots in source runs, not releases."""
+    is_packaged_release = (project_root / "interface.json").is_file() and (
+        project_root / "maafw"
+    ).is_dir()
+    return not is_packaged_release
+
+
 class ContributionScanner(CustomAction):
     controller: Any = None
     _last_profile_hierarchy = ""
@@ -563,6 +571,9 @@ class ContributionScanner(CustomAction):
                 top3_targets = hierarchy_top3 or list(TOP3_TARGETS)
                 for rank, point in top3_targets:
                     self._check_stopping(context)
+                    if max_users and rank > max_users:
+                        self._log(f"厅 {room_id} 已达到贡献榜前 {max_users} 名的扫描上限")
+                        return
                     self._log(f"厅 {room_id} 正在读取排名 {rank} 的用户")
                     self._record_user(
                         context=context,
@@ -576,13 +587,8 @@ class ContributionScanner(CustomAction):
                         delay=delay,
                         unknown_gender_as_male=unknown_gender_as_male,
                     )
-                    if max_users and len(
-                        [
-                            key
-                            for key in processed_users
-                            if key[0] == room_id
-                        ]
-                    ) >= max_users:
+                    if max_users and rank >= max_users:
+                        self._log(f"厅 {room_id} 已完成贡献榜前 {max_users} 名的扫描")
                         return
 
             rank_rows = hierarchy_rows or self._find_rank_rows(items)
@@ -597,6 +603,9 @@ class ContributionScanner(CustomAction):
                 if rank in seen_ranks:
                     continue
                 seen_ranks.add(rank)
+                if max_users and rank > max_users:
+                    self._log(f"厅 {room_id} 已达到贡献榜前 {max_users} 名的扫描上限")
+                    return
                 self._log(f"厅 {room_id} 正在读取排名 {rank} 的用户")
                 self._record_user(
                     context=context,
@@ -610,9 +619,8 @@ class ContributionScanner(CustomAction):
                     delay=delay,
                     unknown_gender_as_male=unknown_gender_as_male,
                 )
-                if max_users and len(
-                    [key for key in processed_users if key[0] == room_id]
-                ) >= max_users:
+                if max_users and rank >= max_users:
+                    self._log(f"厅 {room_id} 已完成贡献榜前 {max_users} 名的扫描")
                     return
 
             next_items = self._scroll_contribution(
@@ -759,7 +767,11 @@ class ContributionScanner(CustomAction):
             if value is None
         ]
         level_sample_path = None
-        if missing_level_fields and profile_image is not None:
+        if (
+            missing_level_fields
+            and profile_image is not None
+            and _should_save_level_samples()
+        ):
             level_sample_path = self._save_level_sample(
                 profile_image,
                 output_path,

@@ -31,7 +31,40 @@
     "task": [
         {
             "name": "语音厅贡献榜扫描",
-            "entry": "VoiceHallScanStart"
+            "entry": "VoiceHallScanStart",
+            "default_check": true,
+            "option": [
+                "ContributionRankLimit"
+            ]
+        },
+        {
+            "name": "查看贡献记录",
+            "entry": "OpenContributionViewer",
+            "description": "启动本地只读数据页面，并使用默认浏览器打开。"
         }
-    ]
+    ],
+    "option": {
+        "ContributionRankLimit": {
+            "type": "input",
+            "label": "贡献榜扫描人数",
+            "description": "设置每个厅只扫描贡献榜前多少名用户。",
+            "inputs": [
+                {
+                    "name": "limit",
+                    "label": "前 N 名",
+                    "default": "30",
+                    "pipeline_type": "int",
+                    "verify": "^[1-9]\\d{0,2}$",
+                    "pattern_msg": "请输入 1 到 999 的整数。"
+                }
+            ],
+            "pipeline_override": {
+                "VoiceHallScanStart": {
+                    "custom_action_param": {
+                        "max_users_per_hall": "{limit}"
+                    }
+                }
+            }
+        }
+    }
 }

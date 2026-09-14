@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <meta name="color-scheme" content="light" />
+        <title>HelloFish · 贡献记录</title>
+        <link rel="stylesheet" href="/styles.css" />
+        <script src="/app.js" defer></script>
+    </head>
+    <body>
+        <header class="hero">
+            <div>
+                <p class="eyebrow">HELLOFISH DATA VIEW</p>
+                <h1>贡献记录</h1>
+                <p class="subtitle">从本机 SQLite 实时读取，数据不会上传。</p>
+            </div>
+            <div class="hero-actions">
+                <button id="open-export" class="secondary" type="button">导出 CSV</button>
+                <button id="open-settings" class="secondary" type="button">隐藏名单设置</button>
+            </div>
+        </header>
+
+        <main>
+            <section class="panel filters" aria-label="筛选条件">
+                <div class="field date-field">
+                    <label for="date-mode">日期</label>
+                    <select id="date-mode">
+                        <option value="today">今天</option>
+                        <option value="recent">近 N 天</option>
+                        <option value="custom">自定义区间</option>
+                    </select>
+                </div>
+                <div id="recent-control" class="field compact hidden">
+                    <label for="recent-days">天数</label>
+                    <input id="recent-days" type="number" min="1" max="3650" value="7" />
+                </div>
+                <div id="custom-control" class="date-range hidden">
+                    <div class="field">
+                        <label for="start-date">开始日期</label>
+                        <input id="start-date" type="date" />
+                    </div>
+                    <span>至</span>
+                    <div class="field">
+                        <label for="end-date">结束日期</label>
+                        <input id="end-date" type="date" />
+                    </div>
+                </div>
+                <div class="field compact">
+                    <label for="min-wealth">财富等级大于</label>
+                    <input id="min-wealth" type="number" min="0" max="300" placeholder="不限" />
+                </div>
+                <label class="check-field">
+                    <input id="include-unknown" type="checkbox" checked />
+                    <span>显示财富等级为 ??? 的记录</span>
+                </label>
+                <div class="field compact">
+                    <label for="gender">性别</label>
+                    <select id="gender">
+                        <option value="all">不限</option>
+                        <option value="male">男</option>
+                        <option value="female">女</option>
+                        <option value="unknown">未知</option>
+                    </select>
+                </div>
+                <div class="field compact">
+                    <label for="min-friends">挚友数量至少</label>
+                    <input id="min-friends" type="number" min="0" placeholder="不限" />
+                </div>
+                <div class="field id-field">
+                    <label for="room-id">厅 ID</label>
+                    <input id="room-id" type="search" placeholder="精确匹配" />
+                </div>
+                <div class="field id-field">
+                    <label for="user-id">用户 ID</label>
+                    <input id="user-id" type="search" placeholder="精确匹配" />
+                </div>
+                <div class="field search-field">
+                    <label for="username">用户名</label>
+                    <input id="username" type="search" placeholder="包含匹配" />
+                </div>
+                <div class="field compact">
+                    <label for="unit">门槛显示</label>
+                    <select id="unit">
+                        <option value="yuan">金额（元）</option>
+                        <option value="contribution">贡献值</option>
+                    </select>
+                </div>
+                <div class="field compact">
+                    <label for="sort">排序</label>
+                    <select id="sort">
+                        <option value="latest">最新扫描</option>
+                        <option value="wealth">财富等级</option>
+                        <option value="rank">厅内排名</option>
+                    </select>
+                </div>
+                <button id="apply-filters" class="primary" type="button">查询</button>
+            </section>
+
+            <section class="summary" aria-live="polite">
+                <div><strong id="record-total">0</strong><span>条记录</span></div>
+                <div><strong id="date-summary">今天</strong><span>数据范围</span></div>
+                <p id="status">正在加载…</p>
+            </section>
+
+            <section class="panel table-panel">
+                <div class="table-scroll">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>日期 / 时间</th>
+                                <th>厅</th>
+                                <th>排名</th>
+                                <th>用户</th>
+                                <th>性别</th>
+                                <th>IP 属地</th>
+                                <th>挚友</th>
+                                <th>财富等级</th>
+                                <th id="threshold-heading">等级最低金额</th>
+                                <th>魅力等级</th>
+                            </tr>
+                        </thead>
+                        <tbody id="records-body"></tbody>
+                    </table>
+                    <div id="empty-state" class="empty hidden">
+                        <span>🐟</span>
+                        <p>当前条件下没有贡献记录</p>
+                    </div>
+                </div>
+                <footer class="pagination">
+                    <button id="previous-page" class="secondary" type="button">上一页</button>
+                    <span id="page-summary">第 1 / 1 页</span>
+                    <button id="next-page" class="secondary" type="button">下一页</button>
+                </footer>
+            </section>
+            <p class="footnote">金额按 10 贡献值 = 1 元换算；展示的是财富等级的最低门槛，并非用户精确贡献额。</p>
+        </main>
+
+        <dialog id="settings-dialog">
+            <form method="dialog" class="dialog-card">
+                <div class="dialog-title">
+                    <div>
+                        <p class="eyebrow">PERSISTENT SETTINGS</p>
+                        <h2>隐藏名单</h2>
+                    </div>
+                    <button class="icon-button" value="cancel" aria-label="关闭">×</button>
+                </div>
+                <p class="dialog-help">每行填写一个 ID，也可用逗号或空格分隔。保存后这些记录将在所有筛选中隐藏。</p>
+                <div class="settings-grid">
+                    <div class="field">
+                        <label for="hidden-room-ids">不显示的厅 ID</label>
+                        <textarea id="hidden-room-ids" rows="10" placeholder="例如：&#10;64900&#10;42017"></textarea>
+                    </div>
+                    <div class="field">
+                        <label for="hidden-user-ids">不显示的用户 ID</label>
+                        <textarea id="hidden-user-ids" rows="10" placeholder="例如：&#10;23049615"></textarea>
+                    </div>
+                </div>
+                <p id="settings-status" class="dialog-status"></p>
+                <div class="dialog-actions">
+                    <button class="secondary" value="cancel">取消</button>
+                    <button id="save-settings" class="primary" type="button">保存设置</button>
+                </div>
+            </form>
+        </dialog>
+
+        <dialog id="export-dialog">
+            <form method="dialog" class="dialog-card">
+                <div class="dialog-title">
+                    <div>
+                        <p class="eyebrow">FILTERED CSV EXPORT</p>
+                        <h2>选择导出列</h2>
+                    </div>
+                    <button class="icon-button" value="cancel" aria-label="关闭">×</button>
+                </div>
+                <p class="dialog-help">将按页面当前筛选条件导出全部匹配记录，不受当前分页限制。</p>
+                <div class="column-tools">
+                    <button id="select-all-columns" class="text-button" type="button">全选</button>
+                    <button id="clear-all-columns" class="text-button" type="button">清空</button>
+                </div>
+                <div class="column-grid">
+                    <label><input type="checkbox" data-export-column="scanned_at" checked />扫描时间</label>
+                    <label><input type="checkbox" data-export-column="scan_date" />扫描日期</label>
+                    <label><input type="checkbox" data-export-column="room_name" checked />厅名称</label>
+                    <label><input type="checkbox" data-export-column="room_id" checked />厅 ID</label>
+                    <label><input type="checkbox" data-export-column="rank" checked />厅内排名</label>
+                    <label><input type="checkbox" data-export-column="username" checked />用户名</label>
+                    <label><input type="checkbox" data-export-column="user_id" checked />用户 ID</label>
+                    <label><input type="checkbox" data-export-column="gender" checked />性别</label>
+                    <label><input type="checkbox" data-export-column="ip" checked />IP 属地</label>
+                    <label><input type="checkbox" data-export-column="close_friend_count" checked />挚友数量</label>
+                    <label><input type="checkbox" data-export-column="wealth_level" checked />财富等级</label>
+                    <label>
+                        <input type="checkbox" data-export-column="wealth_min_contribution" />等级最低贡献值
+                    </label>
+                    <label>
+                        <input type="checkbox" data-export-column="wealth_min_yuan" checked />等级最低金额（元）
+                    </label>
+                    <label><input type="checkbox" data-export-column="charm_level" checked />魅力等级</label>
+                </div>
+                <p id="export-status" class="dialog-status"></p>
+                <div class="dialog-actions">
+                    <button class="secondary" value="cancel">取消</button>
+                    <button id="start-export" class="primary" type="button">导出 CSV</button>
+                </div>
+            </form>
+        </dialog>
+
+        <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    </body>
+</html>
