@@ -40,6 +40,8 @@ FIRST_HALL_WARMUP_SECONDS = 3.0
 CONTRIBUTION_REENTRY_WARMUP_SECONDS = 1.5
 PROFILE_OPEN_MAX_ATTEMPTS = 5
 PROFILE_OPEN_RETRY_SECONDS = 0.8
+PROFILE_DETAIL_RETRY_ATTEMPTS = 2
+PROFILE_DETAIL_RETRY_SECONDS = 0.8
 CONTRIBUTION_HEADER_Y_RANGE = (35, 120)
 TOP3_TARGETS = (
     (1, (362, 335)),
@@ -876,28 +878,43 @@ class ContributionScanner(CustomAction):
             )
             user_id = ocr_user_id
             key = (room_id, user_id)
-        gender, gender_source = self._extract_gender(
+        (
+            profile_image,
+            profile_items,
+            profile_hierarchy,
+            gender,
+            gender_source,
+            username,
+            ip,
+            wealth_level,
+            charm_level,
+        ) = self._read_profile_details_with_retry(
+            context,
             profile_image,
             profile_items,
             self._last_profile_hierarchy,
-            unknown_gender_as_male=unknown_gender_as_male,
+            unknown_gender_as_male,
         )
-        username = self._extract_profile_name(
-            profile_items,
-            self._last_profile_hierarchy,
-        )
-        ip = self._extract_profile_ip(profile_items, self._last_profile_hierarchy)
+        self._last_profile_hierarchy = profile_hierarchy
         close_friend_count = self._scan_close_friend_count(
             context,
             profile_items,
-            self._last_profile_hierarchy,
+            profile_hierarchy,
             delay,
         )
+        if close_friend_count is None:
+            self._log(f"排名 {rank} 的挚友数量尚未识别，等待页面稳定后重试")
+            self._sleep(context, PROFILE_DETAIL_RETRY_SECONDS)
+            retry_image, retry_items = self._capture_ocr(context)
+            retry_hierarchy = self._dump_ui_hierarchy()
+            if retry_items or retry_hierarchy:
+                close_friend_count = self._scan_close_friend_count(
+                    context,
+                    retry_items,
+                    retry_hierarchy,
+                    delay,
+                )
         self._check_stopping(context)
-        wealth_level, charm_level = self._extract_profile_levels(
-            profile_items,
-            profile_image,
-        )
         wealth_level, charm_level = self._retry_missing_profile_levels(
             context,
             profile_image,
@@ -960,14 +977,103 @@ class ContributionScanner(CustomAction):
     ) -> tuple[Any, list[Any]]:
         image = None
         items: list[Any] = []
+        stable_candidate: tuple[Any, list[Any]] | None = None
         for attempt in range(PROFILE_OPEN_MAX_ATTEMPTS):
             self._check_stopping(context)
             image, items = self._capture_ocr(context)
             if self._is_profile_page(items):
-                return image, items
+                if stable_candidate is not None:
+                    return image, items
+                stable_candidate = (image, items)
             if attempt + 1 < PROFILE_OPEN_MAX_ATTEMPTS:
                 self._sleep(context, PROFILE_OPEN_RETRY_SECONDS)
-        return image, items
+        return stable_candidate or (image, items)
+
+    def _read_profile_details_with_retry(
+        self,
+        context: Context,
+        image: Any,
+        items: list[Any],
+        hierarchy: str,
+        unknown_gender_as_male: bool,
+    ) -> tuple[
+        Any,
+        list[Any],
+        str,
+        str,
+        str,
+        str | None,
+        str | None,
+        int | None,
+        int | None,
+    ]:
+        gender = "未知"
+        gender_source = "unknown"
+        username = None
+        ip = None
+        wealth_level = None
+        charm_level = None
+        hidden_levels: set[str] = set()
+
+        for attempt in range(PROFILE_DETAIL_RETRY_ATTEMPTS + 1):
+            if gender == "未知":
+                gender, gender_source = self._extract_gender(
+                    image,
+                    items,
+                    hierarchy,
+                    unknown_gender_as_male=False,
+                )
+            if username is None:
+                username = self._extract_profile_name(items, hierarchy)
+            if ip is None:
+                ip = self._extract_profile_ip(items, hierarchy)
+            retry_wealth, retry_charm = self._extract_profile_levels(items, image)
+            if wealth_level is None:
+                wealth_level = retry_wealth
+            if charm_level is None:
+                charm_level = retry_charm
+            hidden_levels.update(self._hidden_profile_levels(items, image))
+
+            missing: list[str] = []
+            if gender == "未知":
+                missing.append("性别")
+            if username is None:
+                missing.append("用户名")
+            if ip is None:
+                missing.append("IP")
+            if wealth_level is None and "wealth" not in hidden_levels:
+                missing.append("财富等级")
+            if charm_level is None and "charm" not in hidden_levels:
+                missing.append("魅力等级")
+            if not missing or attempt >= PROFILE_DETAIL_RETRY_ATTEMPTS:
+                break
+
+            self._log(
+                "资料页字段尚未稳定，等待后重试：",
+                ",".join(missing),
+            )
+            self._sleep(context, PROFILE_DETAIL_RETRY_SECONDS)
+            retry_image, retry_items = self._capture_ocr(context)
+            retry_hierarchy = self._dump_ui_hierarchy()
+            if retry_items or retry_hierarchy:
+                image = retry_image
+                items = retry_items
+                hierarchy = retry_hierarchy
+
+        if gender == "未知" and unknown_gender_as_male:
+            gender = "男"
+            gender_source = "inferred:未识别到性别图标"
+        return (
+            image,
+            items,
+            hierarchy,
+            gender,
+            gender_source,
+            username,
+            ip,
+            wealth_level,
+            charm_level,
+        )
 
     def _save_level_sample(
         self,

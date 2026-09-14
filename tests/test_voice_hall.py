@@ -1058,6 +1058,7 @@ class HallListRecognitionTest(unittest.TestCase):
                     (None, leaderboard),
                     (None, loading_profile),
                     (None, loaded_profile),
+                    (None, loaded_profile),
                 ],
             ) as capture,
             patch.object(self.scanner, "_sleep") as sleep,
@@ -1066,11 +1067,41 @@ class HallListRecognitionTest(unittest.TestCase):
 
         self.assertIsNone(image)
         self.assertIs(items, loaded_profile)
-        self.assertEqual(capture.call_count, 3)
+        self.assertEqual(capture.call_count, 4)
         self.assertEqual(
             [call.args[1] for call in sleep.call_args_list],
-            [0.8, 0.8],
+            [0.8, 0.8, 0.8],
         )
+
+    def test_profile_details_retry_unknown_fields_after_buffer(self) -> None:
+        first_items = [ocr("ID:71110", (68, 624, 100, 25))]
+        stable_items = [
+            ocr("ID:71110", (68, 624, 100, 25)),
+            ocr("测试用户", (80, 560, 150, 25)),
+            ocr("IP:浙江", (540, 624, 100, 25)),
+            ocr("♂", (170, 624, 30, 25)),
+            ocr("120", (45, 680, 70, 30)),
+            ocr("88", (130, 680, 70, 30)),
+        ]
+
+        with (
+            patch.object(self.scanner, "_capture_ocr", return_value=(None, stable_items)),
+            patch.object(self.scanner, "_dump_ui_hierarchy", return_value=""),
+            patch.object(self.scanner, "_sleep") as sleep,
+        ):
+            details = self.scanner._read_profile_details_with_retry(
+                SimpleNamespace(),
+                None,
+                first_items,
+                "",
+                False,
+            )
+
+        self.assertEqual(details[3], "男")
+        self.assertEqual(details[5], "测试用户")
+        self.assertEqual(details[6], "浙江")
+        self.assertEqual(details[7:], (120, 88))
+        sleep.assert_called_once_with(SimpleNamespace(), 0.8)
 
     def test_partial_profile_page_is_recognized_for_back_navigation(self) -> None:
         controller = FakeController()
