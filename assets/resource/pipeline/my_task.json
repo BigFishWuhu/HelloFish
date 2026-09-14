@@ -15,16 +15,6 @@
             "action_delay": 0.8
         }
     },
-    "OpenContributionViewer": {
-        "recognition": "DirectHit",
-        "action": "Custom",
-        "custom_action": "open_contribution_viewer",
-        "custom_action_param": {
-            "database": "data/voice_hall.sqlite3",
-            "settings": "data/contribution_viewer_settings.json",
-            "web_root": "web/contributions"
-        }
-    },
     "OCRFull": {
         "recognition": "OCR"
     },

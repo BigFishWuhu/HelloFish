@@ -3,7 +3,6 @@ import io
 import json
 import sqlite3
 import threading
-import webbrowser
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -13,10 +12,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from maa.agent.agent_server import AgentServer
-from maa.context import Context
-from maa.custom_action import CustomAction
-
 from voice_hall_storage import VoiceHallDatabase
 
 
@@ -24,6 +19,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATABASE = PROJECT_ROOT / "data" / "voice_hall.sqlite3"
 DEFAULT_SETTINGS = PROJECT_ROOT / "data" / "contribution_viewer_settings.json"
 DEFAULT_WEB_ROOT = PROJECT_ROOT / "web" / "contributions"
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 8765
+DEFAULT_URL = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}/"
 MAX_PAGE_SIZE = 200
 EXPORT_COLUMNS = {
     "scanned_at": "扫描时间",
@@ -60,13 +58,6 @@ _SETTINGS_LOCK = threading.Lock()
 _SERVER_LOCK = threading.Lock()
 _SERVER: "ContributionViewerServer | None" = None
 _SERVER_THREAD: threading.Thread | None = None
-
-
-def _resolve_project_path(value: Any, default: Path) -> Path:
-    path = Path(str(value)) if value else default
-    if not path.is_absolute():
-        path = PROJECT_ROOT / path
-    return path.resolve()
 
 
 def _normalize_ids(value: Any) -> list[str]:
@@ -508,6 +499,8 @@ def ensure_server(
     database_path: Path = DEFAULT_DATABASE,
     settings_path: Path = DEFAULT_SETTINGS,
     web_root: Path = DEFAULT_WEB_ROOT,
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
 ) -> ContributionViewerServer:
     global _SERVER, _SERVER_THREAD
     with _SERVER_LOCK:
@@ -516,7 +509,7 @@ def ensure_server(
         if not web_root.joinpath("index.html").is_file():
             raise FileNotFoundError(f"未找到贡献记录网页：{web_root}")
         server = ContributionViewerServer(
-            ("127.0.0.1", 0),
+            (host, port),
             database_path,
             settings_path,
             web_root,
@@ -530,22 +523,3 @@ def ensure_server(
         _SERVER = server
         _SERVER_THREAD = thread
         return server
-
-
-@AgentServer.custom_action("open_contribution_viewer")
-class OpenContributionViewerAction(CustomAction):
-    def run(self, context: Context, argv: CustomAction.RunArg) -> bool:
-        del context
-        try:
-            params = json.loads(argv.custom_action_param or "{}") or {}
-            server = ensure_server(
-                _resolve_project_path(params.get("database"), DEFAULT_DATABASE),
-                _resolve_project_path(params.get("settings"), DEFAULT_SETTINGS),
-                _resolve_project_path(params.get("web_root"), DEFAULT_WEB_ROOT),
-            )
-            url = f"http://127.0.0.1:{server.server_port}/"
-            print(f"[ContributionViewer] 正在打开 {url}")
-            return bool(webbrowser.open_new_tab(url))
-        except Exception as exc:  # noqa: BLE001
-            print(f"[ContributionViewer] 打开失败：{exc!r}")
-            return False

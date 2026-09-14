@@ -30,6 +30,12 @@ def main():
 
     socket_id = sys.argv[-1]
 
+    try:
+        contribution_viewer.ensure_server()
+        print(f"[ContributionViewer] 可在浏览器中打开 {contribution_viewer.DEFAULT_URL}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[ContributionViewer] 启动失败：{exc!r}")
+
     AgentServer.start_up(socket_id)
     AgentServer.join()
     AgentServer.shut_down()

@@ -247,6 +247,16 @@ tbody tr:hover {
     text-decoration-style: dotted;
     text-underline-offset: 3px;
 }
+.user-copy {
+    display: grid;
+    width: 100%;
+    gap: 2px;
+}
+.user-copy > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 .copy-primary {
     font-weight: 700;
 }

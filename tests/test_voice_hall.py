@@ -1191,6 +1191,15 @@ class HallListRecognitionTest(unittest.TestCase):
             ],
             30,
         )
+        self.assertIn(
+            "[查看贡献记录](http://127.0.0.1:8765/)",
+            scan_task["description"],
+        )
+        self.assertNotIn(
+            "OpenContributionViewer",
+            {task["entry"] for task in interface["task"]},
+        )
+        self.assertNotIn("OpenContributionViewer", pipeline)
 
     def test_open_contribution_does_not_click_default_filters(self) -> None:
         controller = FakeController()

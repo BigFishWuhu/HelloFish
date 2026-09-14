@@ -33,14 +33,10 @@
             "name": "语音厅贡献榜扫描",
             "entry": "VoiceHallScanStart",
             "default_check": true,
+            "description": "采集完成后可随时[查看贡献记录](http://127.0.0.1:8765/)，无需运行额外任务。",
             "option": [
                 "ContributionRankLimit"
             ]
-        },
-        {
-            "name": "查看贡献记录",
-            "entry": "OpenContributionViewer",
-            "description": "启动本地只读数据页面，并使用默认浏览器打开。"
         }
     ],
     "option": {

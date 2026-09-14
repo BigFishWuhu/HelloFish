@@ -111,22 +111,30 @@ async function copyText(value, label) {
     showToast(`已复制${label}：${value}`);
 }
 
-function copyButton(value, label, text, className = "") {
+function userCopyButton(record) {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `copy-value ${className}`.trim();
-    button.textContent = text;
-    if (value === null || value === undefined || value === "") {
+    button.className = "copy-value user-copy";
+
+    const username = document.createElement("span");
+    username.className = "copy-primary";
+    username.textContent = escapeText(record.username);
+    const userId = document.createElement("span");
+    userId.className = "copy-secondary";
+    userId.textContent = `ID ${record.user_id}`;
+    button.append(username, userId);
+
+    if (record.user_id === null || record.user_id === undefined || record.user_id === "") {
         button.disabled = true;
         return button;
     }
-    button.title = `点击复制${label}`;
-    button.setAttribute("aria-label", `${text}，点击复制${label}`);
+    button.title = "点击复制用户 ID";
+    button.setAttribute("aria-label", `${escapeText(record.username)}，用户 ID ${record.user_id}，点击复制用户 ID`);
     button.addEventListener("click", async () => {
         try {
-            await copyText(String(value), label);
+            await copyText(String(record.user_id), "用户 ID");
         } catch (_) {
-            showToast(`复制${label}失败，请手动选择复制`);
+            showToast("复制用户 ID 失败，请手动选择复制");
         }
     });
     return button;
@@ -144,12 +152,7 @@ function renderRecords() {
         const roomId = document.createElement("small");
         roomId.textContent = `ID ${record.room_id}`;
         room.append(roomId);
-        const user = document.createElement("div");
-        user.className = "identity";
-        user.append(
-            copyButton(record.username, "用户名", escapeText(record.username), "copy-primary"),
-            copyButton(record.user_id, "用户 ID", `ID ${record.user_id}`, "copy-secondary"),
-        );
+        const user = userCopyButton(record);
 
         const values = [
             scanned,
