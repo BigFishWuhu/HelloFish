@@ -95,24 +95,70 @@ jobs:
           submodules: true
 
       - name: Download MaaFramework
-        uses: robinraju/release-downloader@v1
-        with:
-          repository: MaaXYZ/MaaFramework
-          fileName: "MAA-${{ matrix.os }}-${{ matrix.arch }}*"
-          latest: ${{ env.MAAFW_VERSION == '' }}
-          tag: ${{ env.MAAFW_VERSION }}
-          out-file-path: "deps"
-          extract: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag_path="latest"
+          if [[ -n "$MAAFW_VERSION" ]]; then
+            tag_path="tags/$MAAFW_VERSION"
+          fi
+
+          release_json=$(curl --fail --location \
+            --retry 5 --retry-all-errors --connect-timeout 30 \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/MaaXYZ/MaaFramework/releases/$tag_path")
+          asset_url=$(jq -r \
+            --arg prefix "MAA-${{ matrix.os }}-${{ matrix.arch }}" \
+            '.assets[] | select(.name | startswith($prefix)) | .browser_download_url' \
+            <<< "$release_json" | head -n 1)
+
+          if [[ -z "$asset_url" || "$asset_url" == "null" ]]; then
+            echo "MaaFramework release asset was not found."
+            exit 1
+          fi
+
+          mkdir -p deps
+          curl --fail --location \
+            --retry 5 --retry-all-errors --connect-timeout 30 \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --output deps/maafw.zip "$asset_url"
+          unzip -q deps/maafw.zip -d deps
+          rm deps/maafw.zip
 
       - name: Download MXU
-        uses: robinraju/release-downloader@v1
-        with:
-          repository: ${{ env.MXU_REPOSITORY }}
-          fileName: "MXU-${{ matrix.os }}-${{ matrix.arch }}-*"
-          latest: ${{ env.MXU_VERSION == '' }}
-          tag: ${{ env.MXU_VERSION }}
-          out-file-path: "MXU"
-          extract: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag_path="latest"
+          if [[ -n "$MXU_VERSION" ]]; then
+            tag_path="tags/$MXU_VERSION"
+          fi
+
+          release_json=$(curl --fail --location \
+            --retry 5 --retry-all-errors --connect-timeout 30 \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$MXU_REPOSITORY/releases/$tag_path")
+          asset_url=$(jq -r \
+            --arg prefix "MXU-${{ matrix.os }}-${{ matrix.arch }}-" \
+            '.assets[] | select(.name | startswith($prefix)) | .browser_download_url' \
+            <<< "$release_json" | head -n 1)
+
+          if [[ -z "$asset_url" || "$asset_url" == "null" ]]; then
+            echo "MXU release asset was not found in $MXU_REPOSITORY."
+            exit 1
+          fi
+
+          mkdir -p MXU
+          curl --fail --location \
+            --retry 5 --retry-all-errors --connect-timeout 30 \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --output MXU/mxu.zip "$asset_url"
+          unzip -q MXU/mxu.zip -d MXU
+          rm MXU/mxu.zip
 
       - name: Install
         shell: bash
