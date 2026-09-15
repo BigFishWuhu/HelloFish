@@ -124,7 +124,7 @@ jobs:
             --retry 5 --retry-all-errors --connect-timeout 30 \
             --header "Authorization: Bearer $GH_TOKEN" \
             --output deps/maafw.zip "$asset_url"
-          unzip -q deps/maafw.zip -d deps
+          unzip -qo deps/maafw.zip -d deps
           rm deps/maafw.zip
 
       - name: Download MXU
@@ -157,7 +157,7 @@ jobs:
             --retry 5 --retry-all-errors --connect-timeout 30 \
             --header "Authorization: Bearer $GH_TOKEN" \
             --output MXU/mxu.zip "$asset_url"
-          unzip -q MXU/mxu.zip -d MXU
+          unzip -qo MXU/mxu.zip -d MXU
           rm MXU/mxu.zip
 
       - name: Install
