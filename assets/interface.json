@@ -28,6 +28,16 @@
             "../agent/main.py"
         ]
     },
+    "startup": {
+        "exec": "python",
+        "args": [
+            "-u",
+            "agent/contribution_viewer.py",
+            "--serve"
+        ],
+        "cwd": ".",
+        "name": "HelloFishContributionViewer"
+    },
     "task": [
         {
             "name": "语音厅贡献榜扫描",

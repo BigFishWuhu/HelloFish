@@ -1393,6 +1393,21 @@ class HallListRecognitionTest(unittest.TestCase):
         self.assertTrue(debug_params["single_hall"])
         self.assertEqual(debug_params["max_users_per_hall"], 30)
 
+    def test_interface_starts_contribution_viewer_on_project_load(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        interface = json.loads(
+            (project_root / "assets" / "interface.json").read_text(encoding="utf-8")
+        )
+
+        startup = interface["startup"]
+        self.assertEqual(startup["exec"], "python")
+        self.assertEqual(
+            startup["args"],
+            ["-u", "agent/contribution_viewer.py", "--serve"],
+        )
+        self.assertEqual(startup["cwd"], ".")
+        self.assertNotIn("--owner-pid", startup["args"])
+
     def test_entry_rank_limit_and_skip_action_are_combined(self) -> None:
         context = SimpleNamespace(
             tasker=SimpleNamespace(
