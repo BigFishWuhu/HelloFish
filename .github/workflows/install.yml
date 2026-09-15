@@ -5,7 +5,8 @@ env:
   # - 设置 VERSION 为空字符串时，下载 latest 版本
   # - 设置 VERSION 为具体版本号时（如 v1.2.3），下载指定版本
   MAAFW_VERSION: "v5.13.0"
-  MXU_VERSION: "v2.5.2"
+  MXU_VERSION: "v2.5.3"
+  MXU_REPOSITORY: "BigFishWuhu/MXU"
 
 on:
   push:
@@ -106,7 +107,7 @@ jobs:
       - name: Download MXU
         uses: robinraju/release-downloader@v1
         with:
-          repository: MistEO/MXU
+          repository: ${{ env.MXU_REPOSITORY }}
           fileName: "MXU-${{ matrix.os }}-${{ matrix.arch }}-*"
           latest: ${{ env.MXU_VERSION == '' }}
           tag: ${{ env.MXU_VERSION }}
