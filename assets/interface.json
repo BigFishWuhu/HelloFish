@@ -46,7 +46,8 @@
             "description": "首次启动任务后，可在退出 MXU 前随时[查看贡献记录](http://127.0.0.1:8765/)；停止任务不会关闭页面。",
             "option": [
                 "ContributionRankLimit",
-                "SkipScannedToday"
+                "SkipScannedToday",
+                "CloudUpload"
             ]
         },
         {
@@ -139,6 +140,49 @@
                 }
             ],
             "default_case": "No"
+        },
+        "CloudUpload": {
+            "type": "input",
+            "label": "云端上传",
+            "description": "扫描成功后将记录上传到 HelloFish 云端服务；留空 URL 可关闭上传。",
+            "inputs": [
+                {
+                    "name": "url",
+                    "label": "服务地址",
+                    "default": "",
+                    "pipeline_type": "string"
+                },
+                {
+                    "name": "username",
+                    "label": "账号",
+                    "default": "",
+                    "pipeline_type": "string"
+                },
+                {
+                    "name": "password",
+                    "label": "密码",
+                    "default": "",
+                    "pipeline_type": "string"
+                }
+            ],
+            "pipeline_override": {
+                "VoiceHallScanStart": {
+                    "custom_action_param": {
+                        "upload_cloud": true,
+                        "cloud_url": "{url}",
+                        "cloud_username": "{username}",
+                        "cloud_password": "{password}"
+                    }
+                },
+                "VoiceHallSingleDebugStart": {
+                    "custom_action_param": {
+                        "upload_cloud": true,
+                        "cloud_url": "{url}",
+                        "cloud_username": "{username}",
+                        "cloud_password": "{password}"
+                    }
+                }
+            }
         }
     }
 }

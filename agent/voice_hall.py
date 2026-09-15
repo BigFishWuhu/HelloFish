@@ -24,6 +24,7 @@ from maa.library import Library
 from maa.pipeline import JOCR, JRecognitionType
 
 from voice_hall_storage import VoiceHallDatabase
+from cloud_sync import CloudSyncClient, CloudSyncConfig
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -407,6 +408,7 @@ def _should_save_level_samples(project_root: Path = PROJECT_ROOT) -> bool:
 class ContributionScanner(CustomAction):
     controller: Any = None
     _last_profile_hierarchy = ""
+    cloud_sync: CloudSyncClient | None = None
 
     @staticmethod
     def _check_stopping(context: Context) -> None:
@@ -466,6 +468,15 @@ class ContributionScanner(CustomAction):
         skip_scanned_today = bool(params.get("skip_scanned_today", False)) or (
             getattr(argv, "custom_action_name", "") == SKIP_SCANNED_CUSTOM_ACTION
         )
+
+        self.cloud_sync = None
+        cloud_config = CloudSyncConfig.from_params(params)
+        if cloud_config.enabled:
+            try:
+                self.cloud_sync = CloudSyncClient(cloud_config)
+                self._log(f"已启用云端上传：{cloud_config.url}")
+            except (TypeError, ValueError) as exc:
+                self._log(f"云端上传配置无效，已禁用：{exc}")
 
         database = VoiceHallDatabase(output_path)
         database.initialize()
@@ -962,6 +973,14 @@ class ContributionScanner(CustomAction):
         record["level_sample_path"] = level_sample_path
         processed_users.add(key)
         updated = VoiceHallDatabase(output_path).upsert_contribution(record)
+        if self.cloud_sync is not None:
+            try:
+                self.cloud_sync.upload(record)
+                self._log(f"云端上传成功：厅={room_id} 用户={user_id}")
+            except Exception as exc:  # noqa: BLE001
+                # Local persistence is authoritative; a transient cloud outage
+                # must not discard a record or fail the scan.
+                self._log(f"云端上传失败，已保留本地记录：厅={room_id} 用户={user_id}，{exc}")
         self._upsert_daily_record(records, record)
         action = "覆盖更新" if updated else "记录成功"
         self._log(

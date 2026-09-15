@@ -1,0 +1,16 @@
+.git/
+.github/
+.vscode/
+data/
+debug/
+deps/
+install/
+node_modules/
+assets/
+tests/
+web/
+*.log
+**/__pycache__/
+*.py[cod]
+*.sqlite3
+*.tmp

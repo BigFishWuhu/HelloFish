@@ -13,7 +13,11 @@
             "skip_scanned_today": false,
             "include_top3": true,
             "unknown_gender_as_male": false,
-            "action_delay": 0.8
+            "action_delay": 0.8,
+            "upload_cloud": false,
+            "cloud_url": "",
+            "cloud_username": "",
+            "cloud_password": ""
         }
     },
     "VoiceHallSingleDebugStart": {
@@ -28,7 +32,11 @@
             "max_users_per_hall": 30,
             "include_top3": true,
             "unknown_gender_as_male": false,
-            "action_delay": 0.8
+            "action_delay": 0.8,
+            "upload_cloud": false,
+            "cloud_url": "",
+            "cloud_username": "",
+            "cloud_password": ""
         }
     },
     "OCRFull": {

@@ -1,0 +1,15 @@
+services:
+  hellofish-cloud:
+    image: ghcr.io/bigfishwuhu/hellofish-cloud:latest
+    container_name: hellofish-cloud
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      HELLOFISH_CLOUD_USERNAME: ${HELLOFISH_CLOUD_USERNAME:-admin}
+      HELLOFISH_CLOUD_PASSWORD: ${HELLOFISH_CLOUD_PASSWORD:?set HELLOFISH_CLOUD_PASSWORD in .env}
+    volumes:
+      - hellofish-cloud-data:/app/cloud/data
+
+volumes:
+  hellofish-cloud-data:
