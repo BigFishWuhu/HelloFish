@@ -19,7 +19,7 @@ python cloud/server.py --host 0.0.0.0 --port 8787 --username admin --password "�
 发布工作流 [`.github/workflows/cloud-image.yml`](../.github/workflows/cloud-image.yml) 会在推送 `v*` 标签时构建并发布 GHCR 镜像：
 `ghcr.io/bigfishwuhu/hellofish-cloud:latest`。也可以在 GitHub Actions 页面手动运行工作流。
 
-在 VPS 上执行：
+在 VPS 上执行（无需配置初始密码）：
 
 ```bash
 mkdir -p hellofish-cloud && cd hellofish-cloud
@@ -30,17 +30,20 @@ docker compose pull
 docker compose up -d
 ```
 
+如果不需要自定义环境变量，可以直接执行 `docker compose pull` 和 `docker compose up -d`，无需创建 `.env`。启动后首次访问 Web 页面即可设置账号和密码。
+
 然后通过 `http://VPS 地址:8787/` 登录。建议在 VPS 上使用 Caddy/Nginx 配置 HTTPS，并只对外开放反向代理端口；`cloud/data` 卷需要纳入备份。
 
 ## GitHub Actions SSH 自动部署
 
-仓库工作流 [`.github/workflows/cloud-deploy.yml`](../.github/workflows/cloud-deploy.yml) 会在 `publish cloud image` 成功后，或手动运行时，通过 SSH Key 更新 VPS 上的 Docker 服务。首次部署在 VPS 上准备目录和 `.env`：
+仓库工作流 [`.github/workflows/cloud-deploy.yml`](../.github/workflows/cloud-deploy.yml) 会在 `publish cloud image` 成功后，或手动运行时，通过 SSH Key 更新 VPS 上的 Docker 服务。首次部署只需准备目标目录；`.env` 为可选项：
 
 ```bash
 mkdir -p /opt/hellofish-cloud
 cd /opt/hellofish-cloud
-printf 'HELLOFISH_CLOUD_USERNAME=admin\n# 可选：留空后在 Web 首次访问时设置\nHELLOFISH_CLOUD_PASSWORD=\n' > .env
 ```
+
+不创建 `.env` 时，容器使用默认端口和空密码启动，首次访问 Web 页面完成账号密码初始化。若需要预置账号或修改端口，再在该目录创建 `.env`。
 
 在 GitHub 仓库的 **Settings → Secrets and variables → Actions** 中配置：
 
