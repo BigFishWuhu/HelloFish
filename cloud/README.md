@@ -10,6 +10,8 @@ python cloud/server.py --host 0.0.0.0 --port 8787 --username admin --password "�
 
 浏览器访问 `http://服务器地址:8787/`，使用相同账号登录。生产环境建议放在 HTTPS 反向代理后，并使用防火墙限制管理端口。用户密码以 PBKDF2-SHA256 哈希保存在 `cloud/data/users.json`，记录保存在 `cloud/data/accounts/`。
 
+如果省略 `--password`（或不设置 `HELLOFISH_CLOUD_PASSWORD`），首次访问 Web 页面会显示初始化表单。设置账号和密码后会自动登录，初始化接口只允许成功一次；已有账号仍使用普通登录。
+
 桌面端配置：在 MXU 的“云端上传”选项填写服务地址（例如 `http://server:8787`）、账号和密码。服务地址也可以直接填写完整上传接口地址。
 
 ## VPS 部署
@@ -23,9 +25,26 @@ python cloud/server.py --host 0.0.0.0 --port 8787 --username admin --password "�
 mkdir -p hellofish-cloud && cd hellofish-cloud
 curl -fsSLO https://raw.githubusercontent.com/BigFishWuhu/HelloFish/main/cloud/docker-compose.example.yml
 cp docker-compose.example.yml docker-compose.yml
-printf 'HELLOFISH_CLOUD_USERNAME=admin\nHELLOFISH_CLOUD_PASSWORD=replace-with-a-long-random-password\n' > .env
+printf 'HELLOFISH_CLOUD_USERNAME=admin\n# 可选：留空后在 Web 首次访问时设置\nHELLOFISH_CLOUD_PASSWORD=\n' > .env
 docker compose pull
 docker compose up -d
 ```
 
 然后通过 `http://VPS 地址:8787/` 登录。建议在 VPS 上使用 Caddy/Nginx 配置 HTTPS，并只对外开放反向代理端口；`cloud/data` 卷需要纳入备份。
+
+## GitHub Actions SSH 自动部署
+
+仓库工作流 [`.github/workflows/cloud-deploy.yml`](../.github/workflows/cloud-deploy.yml) 会在 `publish cloud image` 成功后，或手动运行时，通过 SSH Key 更新 VPS 上的 Docker 服务。首次部署在 VPS 上准备目录和 `.env`：
+
+```bash
+mkdir -p /opt/hellofish-cloud
+cd /opt/hellofish-cloud
+printf 'HELLOFISH_CLOUD_USERNAME=admin\n# 可选：留空后在 Web 首次访问时设置\nHELLOFISH_CLOUD_PASSWORD=\n' > .env
+```
+
+在 GitHub 仓库的 **Settings → Secrets and variables → Actions** 中配置：
+
+- Variables：`CLOUD_VPS_HOST`、`CLOUD_VPS_USER`；可选 `CLOUD_VPS_PORT`（默认 `22`）、`CLOUD_VPS_APP_DIR`（默认 `/opt/hellofish-cloud`）。
+- Secrets：`CLOUD_VPS_SSH_KEY`，部署用户对应的 SSH 私钥（通常是 `-----BEGIN OPENSSH PRIVATE KEY-----` 开头的完整内容）；推荐另设 `CLOUD_VPS_KNOWN_HOSTS`，填入 `ssh-keyscan -p 22 your-vps-host` 的结果以校验主机指纹。
+
+将对应公钥加入 VPS 部署用户的 `~/.ssh/authorized_keys`。工作流只上传 Compose 定义并执行 `docker compose pull`、`docker compose up -d`；密码保留在 VPS `.env`，不会写入仓库或工作流日志。

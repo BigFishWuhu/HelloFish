@@ -109,6 +109,26 @@ class CloudServer(ThreadingHTTPServer):
             self._sessions[token] = username
         return token
 
+    def setup_first_user(self, username: str, password: str) -> str | None:
+        """Create the first account exactly once and return a session token."""
+        username = username.strip()
+        if not username or len(username) > 64:
+            raise ValueError("账号长度必须为 1 到 64 个字符")
+        if len(password) < 6:
+            raise ValueError("密码至少需要 6 个字符")
+        with self._lock:
+            if self.users:
+                return None
+            self.users[username] = _password_hash(password)
+            try:
+                self._save_users()
+            except OSError:
+                self.users.pop(username, None)
+                raise
+            token = secrets.token_urlsafe(32)
+            self._sessions[token] = username
+            return token
+
     def user_for_request(self, handler: BaseHTTPRequestHandler) -> str | None:
         authorization = handler.headers.get("Authorization", "")
         if authorization.lower().startswith("basic "):
@@ -178,6 +198,31 @@ class CloudHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        if path == "/api/auth/setup":
+            value = self._body(64 * 1024)
+            username = str(value.get("username", "")).strip() if value else ""
+            password = str(value.get("password", "")) if value else ""
+            confirmation = str(value.get("password_confirmation", "")) if value else ""
+            if password != confirmation:
+                self._error(HTTPStatus.BAD_REQUEST, "两次输入的密码不一致")
+                return
+            try:
+                token = self.server.setup_first_user(username, password)
+            except ValueError as exc:
+                self._error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            except OSError as exc:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"保存账号失败：{exc}")
+                return
+            if token is None:
+                self._error(HTTPStatus.CONFLICT, "账号已初始化，请直接登录")
+                return
+            self._json(
+                HTTPStatus.CREATED,
+                {"username": username},
+                {"Set-Cookie": f"{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax"},
+            )
+            return
         if path == "/api/auth/login":
             value = self._body(64 * 1024)
             username = str(value.get("username", "")).strip() if value else ""
@@ -233,7 +278,14 @@ class CloudHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/auth/me":
             username = self.server.user_for_request(self)
-            self._json(HTTPStatus.OK, {"authenticated": username is not None, "username": username})
+            self._json(
+                HTTPStatus.OK,
+                {
+                    "authenticated": username is not None,
+                    "username": username,
+                    "setup_required": not bool(self.server.users),
+                },
+            )
             return
         static = {"/": "index.html", "/index.html": "index.html", "/app.js": "app.js", "/styles.css": "styles.css"}.get(path)
         if static:
@@ -294,9 +346,8 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument("--username", default=os.environ.get("HELLOFISH_CLOUD_USERNAME", "admin"))
-    parser.add_argument("--password", default=os.environ.get("HELLOFISH_CLOUD_PASSWORD"), help="管理员密码（也可用 HELLOFISH_CLOUD_PASSWORD）")
+    parser.add_argument("--password", default=os.environ.get("HELLOFISH_CLOUD_PASSWORD"), help="管理员密码（也可用 HELLOFISH_CLOUD_PASSWORD）；省略后可在 Web 首次访问时设置")
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA)
     args = parser.parse_args()
-    if not args.password:
-        parser.error("必须通过 --password 或 HELLOFISH_CLOUD_PASSWORD 设置管理员密码")
-    serve(args.host, args.port, data_root=args.data_root, initial_users={args.username: args.password})
+    initial_users = {args.username: args.password} if args.password else None
+    serve(args.host, args.port, data_root=args.data_root, initial_users=initial_users)

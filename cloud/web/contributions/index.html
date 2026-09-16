@@ -12,12 +12,13 @@
         <section id="login-panel" class="login-panel" aria-label="云端登录">
             <div class="login-card">
                 <p class="eyebrow">HELLOFISH CLOUD</p>
-                <h1>登录云端记录</h1>
-                <p class="subtitle">请输入账号密码访问你的贡献记录。</p>
+                <h1 id="login-title">登录云端记录</h1>
+                <p id="login-subtitle" class="subtitle">请输入账号密码访问你的贡献记录。</p>
                 <form id="login-form">
                     <label class="field">账号<input id="login-username" autocomplete="username" required /></label>
                     <label class="field">密码<input id="login-password" type="password" autocomplete="current-password" required /></label>
-                    <button class="primary" type="submit">登录</button>
+                    <label id="login-confirm-field" class="field hidden">确认密码<input id="login-password-confirm" type="password" autocomplete="new-password" minlength="6" /></label>
+                    <button id="login-submit" class="primary" type="submit">登录</button>
                     <p id="login-status" class="dialog-status"></p>
                 </form>
             </div>

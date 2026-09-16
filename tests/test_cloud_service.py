@@ -63,6 +63,14 @@ class CloudServiceTest(unittest.TestCase):
         self.assertEqual(json.loads(body)["saved"], 1)
         self.assertEqual(self.call("/api/records", headers=headers)[0], 200)
 
+    def test_first_user_setup_is_one_time(self) -> None:
+        self.server.users.clear()
+        token = self.server.setup_first_user("first-user", "secret-1")
+        self.assertTrue(token)
+        self.assertEqual(self.server.authenticate("first-user", "secret-1") is not None, True)
+        self.assertIsNone(self.server.setup_first_user("second-user", "secret-2"))
+        self.assertNotIn("second-user", self.server.users)
+
 
 if __name__ == "__main__":
     unittest.main()

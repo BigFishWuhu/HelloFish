@@ -7,7 +7,7 @@ services:
       - "8787:8787"
     environment:
       HELLOFISH_CLOUD_USERNAME: ${HELLOFISH_CLOUD_USERNAME:-admin}
-      HELLOFISH_CLOUD_PASSWORD: ${HELLOFISH_CLOUD_PASSWORD:?set HELLOFISH_CLOUD_PASSWORD in .env}
+      HELLOFISH_CLOUD_PASSWORD: ${HELLOFISH_CLOUD_PASSWORD:-}
     volumes:
       - hellofish-cloud-data:/app/cloud/data
 

@@ -1,0 +1,63 @@
+name: deploy cloud service
+
+on:
+  workflow_run:
+    workflows: ["publish cloud image"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    # A manual run is useful for recovering/restarting a VPS. For automatic
+    # runs, only deploy after the image workflow completed successfully.
+    if: >-
+      ${{
+        (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') &&
+        vars.CLOUD_VPS_HOST != '' && vars.CLOUD_VPS_USER != ''
+      }}
+    runs-on: ubuntu-latest
+    env:
+      VPS_HOST: ${{ vars.CLOUD_VPS_HOST }}
+      VPS_USER: ${{ vars.CLOUD_VPS_USER }}
+      VPS_PORT: ${{ vars.CLOUD_VPS_PORT || '22' }}
+      VPS_APP_DIR: ${{ vars.CLOUD_VPS_APP_DIR || '/opt/hellofish-cloud' }}
+      VPS_KNOWN_HOSTS: ${{ secrets.CLOUD_VPS_KNOWN_HOSTS }}
+
+    steps:
+      - name: Check out deployment files
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Configure SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.CLOUD_VPS_SSH_KEY }}
+
+      - name: Trust VPS host key
+        run: |
+          mkdir -p "$HOME/.ssh"
+          if [ -n "$VPS_KNOWN_HOSTS" ]; then
+            printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          else
+            ssh-keyscan -p "$VPS_PORT" -H "$VPS_HOST" >> "$HOME/.ssh/known_hosts"
+          fi
+
+      - name: Upload Compose definition
+        run: |
+          ssh -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "mkdir -p '$VPS_APP_DIR'"
+          scp -P "$VPS_PORT" cloud/docker-compose.example.yml \
+            "$VPS_USER@$VPS_HOST:$VPS_APP_DIR/docker-compose.yml"
+
+      - name: Pull and restart service
+        run: |
+          ssh -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
+            "cd '$VPS_APP_DIR' && test -f .env && docker compose pull hellofish-cloud && docker compose up -d --remove-orphans hellofish-cloud"
+
+      - name: Verify service health
+        run: |
+          ssh -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
+            "for i in 1 2 3 4 5 6; do curl --fail --silent http://127.0.0.1:8787/api/health && exit 0; sleep 5; done; exit 1"

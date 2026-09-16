@@ -20,6 +20,7 @@ const state = {page: 1, pageSize: 50, total: 0, records: []};
 const storageKey = "hellofish-contribution-filters-v1";
 const exportStorageKey = "hellofish-contribution-export-columns-v1";
 let toastTimer;
+let setupMode = false;
 
 function localIsoDate(value = new Date()) {
     const offset = value.getTimezoneOffset() * 60_000;
@@ -277,7 +278,16 @@ async function loadRecords() {
     }
 }
 
-function showLogin() {
+function showLogin(firstSetup = false) {
+    setupMode = firstSetup;
+    $("#login-title").textContent = firstSetup ? "设置云端账号" : "登录云端记录";
+    $("#login-subtitle").textContent = firstSetup
+        ? "首次访问请设置账号和密码，完成后即可使用云端记录。"
+        : "请输入账号密码访问你的贡献记录。";
+    $("#login-confirm-field").classList.toggle("hidden", !firstSetup);
+    $("#login-password").autocomplete = firstSetup ? "new-password" : "current-password";
+    $("#login-password-confirm").required = firstSetup;
+    $("#login-submit").textContent = firstSetup ? "完成设置" : "登录";
     $("#login-panel").classList.add("visible");
     document.body.classList.add("logged-out");
 }
@@ -290,7 +300,7 @@ function hideLogin() {
 async function checkAuth() {
     const response = await fetch("/api/auth/me");
     const data = await response.json();
-    if (!data.authenticated) showLogin();
+    if (!data.authenticated) showLogin(Boolean(data.setup_required));
     else hideLogin();
     return Boolean(data.authenticated);
 }
@@ -392,15 +402,20 @@ $("#clear-all-columns").addEventListener("click", () => {
 $("#login-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const status = $("#login-status");
-    status.textContent = "正在登录…";
+    status.textContent = setupMode ? "正在保存账号…" : "正在登录…";
     try {
-        const response = await fetch("/api/auth/login", {
+        const payload = {
+            username: $("#login-username").value,
+            password: $("#login-password").value,
+        };
+        if (setupMode) payload.password_confirmation = $("#login-password-confirm").value;
+        const response = await fetch(setupMode ? "/api/auth/setup" : "/api/auth/login", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({username: $("#login-username").value, password: $("#login-password").value}),
+            body: JSON.stringify(payload),
         });
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "登录失败");
+        if (!response.ok) throw new Error(data.error || (setupMode ? "设置失败" : "登录失败"));
         status.textContent = "";
         hideLogin();
         await loadRecords();
