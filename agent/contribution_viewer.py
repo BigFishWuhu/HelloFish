@@ -10,7 +10,7 @@ import threading
 import time
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -33,6 +33,7 @@ DEFAULT_HEALTH_URL = f"{DEFAULT_URL}api/health"
 DEFAULT_LOG = PROJECT_ROOT / "data" / "contribution_viewer.log"
 HEALTH_RESPONSE = {"service": "HelloFishContributionViewer"}
 MAX_PAGE_SIZE = 200
+CHINA_TZ = timezone(timedelta(hours=8))
 EXPORT_COLUMNS = {
     "scanned_at": "扫描时间",
     "scan_date": "扫描日期",
@@ -126,6 +127,11 @@ def _parse_iso_date(value: str, fallback: date) -> date:
         return fallback
 
 
+def _china_today() -> date:
+    """Return the scan day used by the agent, regardless of host time zone."""
+    return datetime.now(timezone.utc).astimezone(CHINA_TZ).date()
+
+
 def _date_range(query: dict[str, list[str]], today: date) -> tuple[date, date]:
     mode = _single(query, "date_mode", "today")
     if mode == "recent":
@@ -155,7 +161,7 @@ class RecordQuery:
 
     @classmethod
     def from_query(cls, query: dict[str, list[str]], today: date | None = None) -> "RecordQuery":
-        local_today = today or date.today()
+        local_today = today or _china_today()
         start_date, end_date = _date_range(query, local_today)
         raw_minimum = _single(query, "min_wealth_level")
         minimum = None if raw_minimum == "" else _parse_int(raw_minimum, 0, 0, 300)

@@ -535,9 +535,11 @@ class ContributionScanner(CustomAction):
 
         self.controller = context.tasker.controller
         controller = self.controller
+        scan_day = self._now()[:10]
         self._log(
             "开始扫描，当前设备分辨率=",
             getattr(controller, "resolution", "unknown"),
+            f"扫描日期={scan_day}",
             f"每厅扫描上限={max_users_per_hall}",
             f"跳过今日已扫描厅={skip_scanned_today}",
         )
@@ -595,7 +597,6 @@ class ContributionScanner(CustomAction):
         new_hall_count = 0
         page_signatures: set[tuple[str, ...]] = set()
         scanned_this_run: set[str] = set()
-        scan_day = self._now()[:10]
         needs_first_hall_warmup = True
 
         for _ in range(max_hall_pages):

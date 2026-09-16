@@ -83,6 +83,13 @@ function formatThreshold(contribution) {
     return formatChineseNumber(Number(contribution) / 10, " 元");
 }
 
+function formatScanTime(value) {
+    if (value === null || value === undefined || value === "") return "—";
+    const text = String(value);
+    const match = text.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})/);
+    return match ? `${match[1]} ${match[2]}` : text.replace("T", " ");
+}
+
 function escapeText(value) {
     return value === null || value === undefined || value === "" ? "—" : String(value);
 }
@@ -146,7 +153,7 @@ function renderRecords() {
     body.replaceChildren();
     for (const record of state.records) {
         const row = document.createElement("tr");
-        const scanned = String(record.scanned_at || "").replace("T", " ");
+        const scanned = formatScanTime(record.scanned_at);
         const room = document.createElement("div");
         room.className = "identity";
         room.append(document.createTextNode(escapeText(record.room_name)));

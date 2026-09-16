@@ -8,7 +8,7 @@ import tempfile
 import threading
 import unittest
 from contextlib import closing
-from datetime import date
+from datetime import date, datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
 from unittest.mock import patch
@@ -112,6 +112,20 @@ class ContributionViewerTest(unittest.TestCase):
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["records"][0]["user_id"], "u1")
         self.assertIsNotNone(result["records"][0]["wealth_min_contribution"])
+
+    def test_default_today_uses_china_time_when_host_is_still_in_utc_yesterday(self) -> None:
+        with patch.object(
+            contribution_viewer,
+            "datetime",
+            wraps=datetime,
+        ) as mocked_datetime:
+            mocked_datetime.now.return_value = datetime(
+                2026, 9, 13, 16, 30, tzinfo=timezone.utc
+            )
+            query = RecordQuery.from_query({})
+
+        self.assertEqual(query.start_date, date(2026, 9, 14))
+        self.assertEqual(query.end_date, date(2026, 9, 14))
 
     def test_recent_days_minimum_unknown_and_hidden_ids(self) -> None:
         save_settings(

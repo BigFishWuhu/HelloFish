@@ -1308,6 +1308,13 @@ class HallListRecognitionTest(unittest.TestCase):
                 for argument in call.args
             )
         )
+        self.assertTrue(
+            any(
+                "扫描日期=" in str(argument)
+                for call in log.call_args_list
+                for argument in call.args
+            )
+        )
 
     def test_interface_defaults_contribution_rank_limit_to_100(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
