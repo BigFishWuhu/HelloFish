@@ -71,6 +71,53 @@ class CloudServiceTest(unittest.TestCase):
         self.assertIsNone(self.server.setup_first_user("second-user", "secret-2"))
         self.assertNotIn("second-user", self.server.users)
 
+    def test_change_password_requires_current_password_and_rotates_session(self) -> None:
+        credentials = base64.b64encode(b"alice:secret").decode("ascii")
+        auth_headers = {"Authorization": f"Basic {credentials}"}
+        status, response_headers, _ = self.call(
+            "/api/auth/change-password",
+            {
+                "current_password": "secret",
+                "new_password": "new-secret",
+                "password_confirmation": "new-secret",
+            },
+            {**auth_headers, "Content-Type": "application/json"},
+            "POST",
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(response_headers.get("Set-Cookie"))
+        self.assertIsNone(self.server.authenticate("alice", "secret"))
+        self.assertIsNotNone(self.server.authenticate("alice", "new-secret"))
+
+    def test_change_password_rejects_wrong_current_password_and_mismatch(self) -> None:
+        credentials = base64.b64encode(b"alice:secret").decode("ascii")
+        headers = {"Authorization": f"Basic {credentials}", "Content-Type": "application/json"}
+        status, _, body = self.call(
+            "/api/auth/change-password",
+            {
+                "current_password": "wrong",
+                "new_password": "new-secret",
+                "password_confirmation": "new-secret",
+            },
+            headers,
+            "POST",
+        )
+        self.assertEqual(status, 401)
+        self.assertIn("当前密码错误", json.loads(body)["error"])
+
+        status, _, body = self.call(
+            "/api/auth/change-password",
+            {
+                "current_password": "secret",
+                "new_password": "new-secret",
+                "password_confirmation": "different",
+            },
+            headers,
+            "POST",
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("不一致", json.loads(body)["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

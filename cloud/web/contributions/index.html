@@ -32,6 +32,7 @@
             <div class="hero-actions">
                 <button id="open-export" class="secondary" type="button">导出 CSV</button>
                 <button id="open-settings" class="secondary" type="button">隐藏名单设置</button>
+                <button id="open-password" class="secondary" type="button">修改密码</button>
                 <button id="logout" class="secondary" type="button">退出登录</button>
             </div>
         </header>
@@ -217,6 +218,29 @@
                 <div class="dialog-actions">
                     <button class="secondary" value="cancel">取消</button>
                     <button id="start-export" class="primary" type="button">导出 CSV</button>
+                </div>
+            </form>
+        </dialog>
+
+        <dialog id="password-dialog">
+            <form method="dialog" class="dialog-card password-card">
+                <div class="dialog-title">
+                    <div>
+                        <p class="eyebrow">ACCOUNT SECURITY</p>
+                        <h2>修改密码</h2>
+                    </div>
+                    <button class="icon-button" value="cancel" aria-label="关闭">×</button>
+                </div>
+                <p class="dialog-help">修改成功后，其他设备上的登录会话将失效。</p>
+                <div class="password-fields">
+                    <label class="field">当前密码<input id="current-password" type="password" autocomplete="current-password" required /></label>
+                    <label class="field">新密码<input id="new-password" type="password" autocomplete="new-password" minlength="6" required /></label>
+                    <label class="field">确认新密码<input id="password-confirm" type="password" autocomplete="new-password" minlength="6" required /></label>
+                </div>
+                <p id="password-status" class="dialog-status"></p>
+                <div class="dialog-actions">
+                    <button class="secondary" value="cancel">取消</button>
+                    <button id="save-password" class="primary" type="button">保存密码</button>
                 </div>
             </form>
         </dialog>

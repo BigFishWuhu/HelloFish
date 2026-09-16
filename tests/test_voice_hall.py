@@ -562,6 +562,33 @@ class HallListRecognitionTest(unittest.TestCase):
             ("女", "icon:♀"),
         )
 
+    def test_gender_color_uses_multiple_points_instead_of_one_noisy_pixel(self) -> None:
+        hierarchy = """<?xml version='1.0'?>
+        <hierarchy><node resource-id="app:id/iv_gender" text=""
+        bounds="[168,629][241,662]" /></hierarchy>"""
+        image = np.zeros((1280, 720, 3), dtype=np.uint8)
+        image[629:662, 168:201] = (246, 205, 230)
+        # A cyan compression/noise pixel must not overturn the pink majority.
+        image[629, 168] = (235, 238, 190)
+
+        self.assertEqual(
+            self.scanner._extract_gender(image, [], hierarchy, True),
+            ("女", "icon:♀"),
+        )
+
+    def test_gender_color_requires_a_clear_multi_point_majority(self) -> None:
+        hierarchy = """<?xml version='1.0'?>
+        <hierarchy><node resource-id="app:id/iv_gender" text=""
+        bounds="[168,629][241,662]" /></hierarchy>"""
+        image = np.zeros((1280, 720, 3), dtype=np.uint8)
+        image[629:640, 168:179] = (235, 238, 190)
+        image[651:662, 190:201] = (246, 205, 230)
+
+        self.assertEqual(
+            self.scanner._extract_gender(image, [], hierarchy, False),
+            ("未知", "unknown"),
+        )
+
     def test_gender_does_not_use_goddess_or_god_badge_text(self) -> None:
         items = [ocr("女神", (48, 61, 64, 38))]
         self.assertEqual(
@@ -1258,7 +1285,7 @@ class HallListRecognitionTest(unittest.TestCase):
         )
         scroll.assert_not_called()
 
-    def test_missing_rank_limit_uses_safe_default_of_30(self) -> None:
+    def test_missing_rank_limit_uses_safe_default_of_100(self) -> None:
         context = SimpleNamespace(
             tasker=SimpleNamespace(
                 controller=FakeController(),
@@ -1276,13 +1303,13 @@ class HallListRecognitionTest(unittest.TestCase):
 
         self.assertTrue(
             any(
-                "每厅扫描上限=30" in str(argument)
+                "每厅扫描上限=100" in str(argument)
                 for call in log.call_args_list
                 for argument in call.args
             )
         )
 
-    def test_interface_defaults_contribution_rank_limit_to_30(self) -> None:
+    def test_interface_defaults_contribution_rank_limit_to_100(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         interface = json.loads(
             (project_root / "assets" / "interface.json").read_text(encoding="utf-8")
@@ -1303,12 +1330,12 @@ class HallListRecognitionTest(unittest.TestCase):
         rank_limit = interface["option"]["ContributionRankLimit"]
         self.assertIn("ContributionRankLimit", scan_task["option"])
         self.assertIn("SkipScannedToday", scan_task["option"])
-        self.assertEqual(rank_limit["inputs"][0]["default"], "30")
+        self.assertEqual(rank_limit["inputs"][0]["default"], "100")
         self.assertEqual(
             pipeline["VoiceHallScanStart"]["custom_action_param"][
                 "max_users_per_hall"
             ],
-            30,
+            100,
         )
         skip_today = interface["option"]["SkipScannedToday"]
         self.assertEqual(skip_today["default_case"], "No")
@@ -1391,7 +1418,7 @@ class HallListRecognitionTest(unittest.TestCase):
         )
         debug_params = pipeline["VoiceHallSingleDebugStart"]["custom_action_param"]
         self.assertTrue(debug_params["single_hall"])
-        self.assertEqual(debug_params["max_users_per_hall"], 30)
+        self.assertEqual(debug_params["max_users_per_hall"], 100)
 
     def test_interface_starts_contribution_viewer_on_project_load(self) -> None:
         project_root = Path(__file__).resolve().parents[1]

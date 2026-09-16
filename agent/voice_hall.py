@@ -237,6 +237,54 @@ def _find_profile_gender_box(
     return copy_right, top, gap_width, bottom - top
 
 
+def _classify_gender_color_points(roi: Any) -> str | None:
+    """Classify an icon from several spatial color samples.
+
+    The icon can contain anti-aliased edges and a transparent/background area,
+    so a single pixel or the whole-ROI average is easy to skew. Each cell in
+    a 3x3 grid contributes at most one vote based on its median colored pixel.
+    """
+    pixels = np.asarray(roi)
+    if pixels.ndim != 3 or pixels.shape[2] < 3:
+        return None
+
+    height, width = pixels.shape[:2]
+    if height < 3 or width < 3:
+        return None
+
+    male_votes = 0
+    female_votes = 0
+    for row in range(3):
+        y0 = row * height // 3
+        y1 = (row + 1) * height // 3
+        for column in range(3):
+            x0 = column * width // 3
+            x1 = (column + 1) * width // 3
+            colors = pixels[y0:y1, x0:x1, :3].reshape(-1, 3).astype(np.int16)
+            if colors.size == 0:
+                continue
+            chroma = colors.max(axis=1) - colors.min(axis=1)
+            colored = colors[(colors.max(axis=1) >= 140) & (chroma >= 15)]
+            if colored.size == 0:
+                continue
+
+            median = np.median(colored, axis=0)
+            green_delta = median[1] - (median[0] + median[2]) / 2
+            if green_delta >= 8:
+                male_votes += 1
+            elif green_delta <= -8:
+                female_votes += 1
+
+    total_votes = male_votes + female_votes
+    if total_votes < 2:
+        return None
+    if male_votes > female_votes and male_votes / total_votes >= 0.6:
+        return "男"
+    if female_votes > male_votes and female_votes / total_votes >= 0.6:
+        return "女"
+    return None
+
+
 def _find_contribution_targets(
     hierarchy: str,
 ) -> tuple[list[tuple[int, tuple[int, int]]], list[tuple[int, int]]]:
@@ -461,7 +509,7 @@ class ContributionScanner(CustomAction):
         max_contribution_pages = max(1, int(params.get("max_contribution_pages", 100)))
         # Keep the documented default as the final safety boundary even when
         # a third-party runner invokes this custom action without UI options.
-        max_users_per_hall = max(1, int(params.get("max_users_per_hall", 30)))
+        max_users_per_hall = max(1, int(params.get("max_users_per_hall", 100)))
         include_top3 = bool(params.get("include_top3", True))
         unknown_gender_as_male = bool(params.get("unknown_gender_as_male", False))
         single_hall = bool(params.get("single_hall", False))
@@ -1429,20 +1477,11 @@ class ContributionScanner(CustomAction):
             try:
                 pixels = np.asarray(image)
                 roi = pixels[y : y + height, x : x + icon_width, :3]
-                colors = roi.reshape(-1, 3).astype(np.int16)
-                chroma = colors.max(axis=1) - colors.min(axis=1)
-                bright_colored = colors[(colors.max(axis=1) >= 140) & (chroma >= 15)]
-                if bright_colored.size:
-                    # Channel 1 is green in both RGB and BGR. Cyan ♂ has more
-                    # green than red/blue; pink ♀ has distinctly less.
-                    green_delta = np.median(
-                        bright_colored[:, 1]
-                        - (bright_colored[:, 0] + bright_colored[:, 2]) / 2
-                    )
-                    if green_delta >= 8:
-                        return "男", "icon:♂"
-                    if green_delta <= -8:
-                        return "女", "icon:♀"
+                gender = _classify_gender_color_points(roi)
+                if gender == "男":
+                    return "男", "icon:♂"
+                if gender == "女":
+                    return "女", "icon:♀"
             except (AttributeError, IndexError, TypeError, ValueError):
                 pass
 

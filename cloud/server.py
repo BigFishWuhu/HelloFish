@@ -129,6 +129,29 @@ class CloudServer(ThreadingHTTPServer):
             self._sessions[token] = username
             return token
 
+    def change_password(self, username: str, current_password: str, new_password: str) -> str:
+        """Change an existing user's password and return a fresh session token."""
+        if len(new_password) < 6:
+            raise ValueError("密码至少需要 6 个字符")
+        with self._lock:
+            encoded = self.users.get(username)
+            if not encoded or not _password_matches(current_password, encoded):
+                raise PermissionError("当前密码错误")
+            previous = encoded
+            self.users[username] = _password_hash(new_password)
+            try:
+                self._save_users()
+            except OSError:
+                self.users[username] = previous
+                raise
+
+            for token, session_user in list(self._sessions.items()):
+                if session_user == username:
+                    self._sessions.pop(token, None)
+            token = secrets.token_urlsafe(32)
+            self._sessions[token] = username
+            return token
+
     def user_for_request(self, handler: BaseHTTPRequestHandler) -> str | None:
         authorization = handler.headers.get("Authorization", "")
         if authorization.lower().startswith("basic "):
@@ -230,6 +253,34 @@ class CloudHandler(BaseHTTPRequestHandler):
             token = self.server.authenticate(username, password)
             if token is None:
                 self._error(HTTPStatus.UNAUTHORIZED, "账号或密码错误")
+                return
+            self._json(
+                HTTPStatus.OK,
+                {"username": username},
+                {"Set-Cookie": f"{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax"},
+            )
+            return
+        if path == "/api/auth/change-password":
+            username = self._auth()
+            if username is None:
+                return
+            value = self._body(64 * 1024)
+            current_password = str(value.get("current_password", "")) if value else ""
+            new_password = str(value.get("new_password", "")) if value else ""
+            confirmation = str(value.get("password_confirmation", "")) if value else ""
+            if new_password != confirmation:
+                self._error(HTTPStatus.BAD_REQUEST, "两次输入的新密码不一致")
+                return
+            try:
+                token = self.server.change_password(username, current_password, new_password)
+            except PermissionError as exc:
+                self._error(HTTPStatus.UNAUTHORIZED, str(exc))
+                return
+            except ValueError as exc:
+                self._error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            except OSError as exc:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"保存密码失败：{exc}")
                 return
             self._json(
                 HTTPStatus.OK,

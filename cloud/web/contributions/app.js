@@ -358,6 +358,46 @@ async function saveSettings() {
     }
 }
 
+function openPasswordDialog() {
+    ["current-password", "new-password", "password-confirm"].forEach((id) => {
+        $(id).value = "";
+    });
+    $("password-status").textContent = "";
+    $("password-dialog").showModal();
+}
+
+async function savePassword() {
+    const button = $("save-password");
+    const status = $("password-status");
+    const newPassword = $("new-password").value;
+    const confirmation = $("password-confirm").value;
+    if (newPassword !== confirmation) {
+        status.textContent = "两次输入的新密码不一致";
+        return;
+    }
+    button.disabled = true;
+    status.textContent = "正在保存…";
+    try {
+        const response = await fetch("/api/auth/change-password", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                current_password: $("current-password").value,
+                new_password: newPassword,
+                password_confirmation: confirmation,
+            }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "修改密码失败");
+        status.textContent = "密码已修改";
+        setTimeout(() => $("password-dialog").close(), 500);
+    } catch (error) {
+        status.textContent = error.message;
+    } finally {
+        button.disabled = false;
+    }
+}
+
 controls.dateMode.addEventListener("change", updateDateControls);
 controls.unit.addEventListener("change", () => {
     persistFilters();
@@ -391,6 +431,8 @@ $("#next-page").addEventListener("click", () => {
 });
 $("#open-settings").addEventListener("click", openSettings);
 $("#save-settings").addEventListener("click", saveSettings);
+$("#open-password").addEventListener("click", openPasswordDialog);
+$("#save-password").addEventListener("click", savePassword);
 $("#open-export").addEventListener("click", openExport);
 $("#start-export").addEventListener("click", startExport);
 $("#select-all-columns").addEventListener("click", () => {

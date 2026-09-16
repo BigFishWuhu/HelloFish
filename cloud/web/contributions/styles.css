@@ -366,6 +366,8 @@ dialog::backdrop {
     gap: 18px;
     margin-top: 20px;
 }
+.password-card { width: min(440px, 100%); }
+.password-fields { display: grid; gap: 14px; }
 .column-tools {
     display: flex;
     justify-content: flex-end;
