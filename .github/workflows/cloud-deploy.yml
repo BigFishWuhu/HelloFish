@@ -12,10 +12,16 @@ permissions:
 jobs:
   deploy:
     # A manual run is useful for recovering/restarting a VPS. For automatic
-    # runs, only deploy after the image workflow completed successfully.
+    # runs, deploy only after a successful v* tag image publication.
     if: >-
       ${{
-        (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') &&
+        (
+          github.event_name == 'workflow_dispatch' ||
+          (
+            github.event.workflow_run.conclusion == 'success' &&
+            github.event.workflow_run.event == 'push'
+          )
+        ) &&
         vars.CLOUD_VPS_HOST != '' && vars.CLOUD_VPS_USER != ''
       }}
     runs-on: ubuntu-latest

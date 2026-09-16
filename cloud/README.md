@@ -36,7 +36,7 @@ docker compose up -d
 
 ## GitHub Actions SSH 自动部署
 
-仓库工作流 [`.github/workflows/cloud-deploy.yml`](../.github/workflows/cloud-deploy.yml) 会在 `publish cloud image` 成功后，或手动运行时，通过 SSH Key 更新 VPS 上的 Docker 服务。首次部署只需准备目标目录；`.env` 为可选项：
+给仓库推送 `v1.2.3` 这类 `v*` tag 时，`install.yml` 会创建 GitHub Release，`cloud-image.yml` 会发布镜像，随后 `cloud-deploy.yml` 会通过 SSH Key 更新 VPS 上的 Docker 服务。也可以单独手动运行部署工作流。首次部署只需准备目标目录；`.env` 为可选项：
 
 ```bash
 mkdir -p /opt/hellofish-cloud
