@@ -66,4 +66,4 @@ jobs:
       - name: Verify service health
         run: |
           ssh -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-            "for i in 1 2 3 4 5 6; do curl --fail --silent http://127.0.0.1:8787/api/health && exit 0; sleep 5; done; exit 1"
+            "for i in 1 2 3 4 5 6 7 8 9 10 11 12; do [ \"\$(docker inspect --format '{{.State.Health.Status}}' hellofish-cloud 2>/dev/null)\" = healthy ] && exit 0; sleep 5; done; docker logs --tail 50 hellofish-cloud; exit 1"

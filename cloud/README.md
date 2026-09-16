@@ -32,7 +32,16 @@ docker compose up -d
 
 如果不需要自定义环境变量，可以直接执行 `docker compose pull` 和 `docker compose up -d`，无需创建 `.env`。启动后首次访问 Web 页面即可设置账号和密码。
 
-然后通过 `http://VPS 地址:8787/` 登录。建议在 VPS 上使用 Caddy/Nginx 配置 HTTPS，并只对外开放反向代理端口；`cloud/data` 卷需要纳入备份。
+如果宿主机的 `8787` 端口已被占用，在 `.env` 中指定其他端口，例如：
+
+```bash
+printf 'HELLOFISH_CLOUD_PORT=18787\n' > .env
+docker compose up -d
+```
+
+此时通过 `http://VPS地址:18787/` 访问，容器内部端口仍为 `8787`。
+
+然后通过配置的宿主机端口登录。建议在 VPS 上使用 Caddy/Nginx 配置 HTTPS，并只对外开放反向代理端口；`cloud/data` 卷需要纳入备份。
 
 ## GitHub Actions SSH 自动部署
 
@@ -43,7 +52,7 @@ mkdir -p /opt/hellofish-cloud
 cd /opt/hellofish-cloud
 ```
 
-不创建 `.env` 时，容器使用默认端口和空密码启动，首次访问 Web 页面完成账号密码初始化。若需要预置账号或修改端口，再在该目录创建 `.env`。
+不创建 `.env` 时，容器使用默认端口和空密码启动，首次访问 Web 页面完成账号密码初始化。若需要预置账号或修改宿主机端口，再在该目录创建 `.env`，例如写入 `HELLOFISH_CLOUD_PORT=18787`。
 
 在 GitHub 仓库的 **Settings → Secrets and variables → Actions** 中配置：
 
