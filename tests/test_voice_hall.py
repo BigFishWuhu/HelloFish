@@ -1463,6 +1463,22 @@ class HallListRecognitionTest(unittest.TestCase):
             ],
             100,
         )
+        scan_params = pipeline["VoiceHallScanStart"]["custom_action_param"]
+        self.assertEqual(
+            {
+                name: scan_params[name]
+                for name in (
+                    "record_gender_male",
+                    "record_gender_female",
+                    "record_gender_unknown",
+                )
+            },
+            {
+                "record_gender_male": False,
+                "record_gender_female": False,
+                "record_gender_unknown": False,
+            },
+        )
         skip_today = interface["option"]["SkipScannedToday"]
         record_genders = interface["option"]["RecordGenders"]
         self.assertEqual(skip_today["default_case"], "No")
@@ -1515,12 +1531,49 @@ class HallListRecognitionTest(unittest.TestCase):
         self.assertEqual(
             _selected_record_genders(
                 {
-                    "record_gender_male": True,
-                    "record_gender_female": False,
+                    "record_gender_male": "true",
+                    "record_gender_female": "false",
                     "record_gender_unknown": True,
                 }
             ),
             {"男", "未知"},
+        )
+
+    def test_run_honors_false_string_gender_flags(self) -> None:
+        context = SimpleNamespace(
+            tasker=SimpleNamespace(
+                controller=FakeController(),
+                stopping=False,
+            )
+        )
+        argv = SimpleNamespace(
+            custom_action_param=json.dumps(
+                {
+                    "record_gender_male": "true",
+                    "record_gender_female": "false",
+                    "record_gender_unknown": "false",
+                }
+            )
+        )
+        with (
+            patch.object(self.scanner, "_return_to_hall_list", return_value=False),
+            patch.object(self.scanner, "_log") as log,
+        ):
+            self.assertFalse(self.scanner._run(context, argv))
+
+        self.assertTrue(
+            any(
+                "记录性别=男" in str(argument)
+                for call in log.call_args_list
+                for argument in call.args
+            )
+        )
+        self.assertFalse(
+            any(
+                "记录性别=女" in str(argument) or "记录性别=未知" in str(argument)
+                for call in log.call_args_list
+                for argument in call.args
+            )
         )
 
     def test_scanned_hall_state_only_matches_the_same_day(self) -> None:

@@ -637,10 +637,16 @@ def _selected_record_genders(params: dict[str, Any]) -> set[str]:
         return {
             gender
             for name, gender in flag_names.items()
-            if bool(params.get(name, False))
+            if _setting_enabled(params.get(name, False))
         }
     selected = _normalize_gender_selection(params.get("record_genders"))
     return selected or {"男", "女", "未知"}
+
+
+def _setting_enabled(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 def _should_save_level_samples(project_root: Path = PROJECT_ROOT) -> bool:
