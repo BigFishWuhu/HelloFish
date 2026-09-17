@@ -16,6 +16,7 @@ from voice_hall import (  # noqa: E402
     ContributionScanner,
     UI_DUMP_COMMAND,
     UI_DUMP_CONTROLLER_TIMEOUT_MS,
+    LEADERBOARD_USER_CODE_X,
     _ScanStopped,
     _build_ui_dump_command,
     _ensure_shell_api_types,
@@ -1350,6 +1351,75 @@ class HallListRecognitionTest(unittest.TestCase):
         self.assertTrue(returned)
         self.assertEqual(controller.clicks, [("key", 4)])
 
+    def test_back_navigation_uses_hierarchy_when_contribution_ocr_is_missing(self) -> None:
+        controller = FakeController()
+        self.scanner.controller = controller
+        contribution_hierarchy = """<?xml version='1.0'?>
+        <hierarchy>
+          <node resource-id="app:id/ivToolbarBack" text=""
+                bounds="[16,48][72,104]" />
+          <node resource-id="app:id/rv_rank_list" text=""
+                bounds="[0,547][720,1126]" />
+          <node resource-id="" text="房间贡献榜" selected="true"
+                bounds="[300,55][450,95]" />
+        </hierarchy>"""
+        hall_list_hierarchy = """<?xml version='1.0'?>
+        <hierarchy>
+          <node resource-id="" text="女神" bounds="[48,61][112,99]" />
+          <node resource-id="" text="男神" bounds="[162,61][226,99]" />
+          <node resource-id="" text="聊天室" bounds="[40,1200][105,1235]" />
+        </hierarchy>"""
+
+        with (
+            patch.object(self.scanner, "_capture_ocr", return_value=(None, [])),
+            patch.object(
+                self.scanner,
+                "_dump_ui_hierarchy",
+                side_effect=[contribution_hierarchy, hall_list_hierarchy],
+            ),
+            patch.object(self.scanner, "_sleep"),
+            patch.object(self.scanner, "_log") as log,
+        ):
+            returned = self.scanner._return_to_hall_list(
+                SimpleNamespace(),
+                max_attempts=2,
+            )
+
+        self.assertTrue(returned)
+        self.assertEqual(controller.clicks, [("key", 4)])
+        self.assertTrue(
+            any("无障碍确认已离开贡献榜" in str(call.args) for call in log.call_args_list)
+        )
+        self.assertTrue(
+            any("无障碍确认已返回厅列表" in str(call.args) for call in log.call_args_list)
+        )
+
+    def test_back_navigation_does_not_press_back_when_hierarchy_is_hall_list(self) -> None:
+        controller = FakeController()
+        self.scanner.controller = controller
+        hall_list_hierarchy = """<?xml version='1.0'?>
+        <hierarchy>
+          <node resource-id="" text="女神" bounds="[48,61][112,99]" />
+          <node resource-id="" text="男神" bounds="[162,61][226,99]" />
+          <node resource-id="" text="聊天室" bounds="[40,1200][105,1235]" />
+        </hierarchy>"""
+
+        with (
+            patch.object(self.scanner, "_capture_ocr", return_value=(None, [])),
+            patch.object(
+                self.scanner,
+                "_dump_ui_hierarchy",
+                return_value=hall_list_hierarchy,
+            ),
+        ):
+            returned = self.scanner._return_to_hall_list(
+                SimpleNamespace(),
+                max_attempts=2,
+            )
+
+        self.assertTrue(returned)
+        self.assertEqual(controller.clicks, [])
+
     def test_contribution_scan_skips_unopenable_mystery_user(self) -> None:
         controller = FakeController()
         self.scanner.controller = controller
@@ -1470,6 +1540,10 @@ class HallListRecognitionTest(unittest.TestCase):
         self.assertEqual(
             [call.kwargs["rank"] for call in record_user.call_args_list],
             [1, 2, 3, 4],
+        )
+        self.assertEqual(
+            record_user.call_args_list[-1].kwargs["click_point"],
+            (LEADERBOARD_USER_CODE_X, 610),
         )
         scroll.assert_not_called()
 

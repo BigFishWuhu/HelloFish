@@ -49,7 +49,10 @@ TOP3_TARGETS = (
     (2, (132, 335)),
     (3, (592, 335)),
 )
-LEADERBOARD_AVATAR_X = 130
+# The avatar's lower edge is adjacent to the follow button.  Click the user
+# code column instead: the row still opens the profile, without risking a
+# follow action when the rank list shifts by a few pixels.
+LEADERBOARD_USER_CODE_X = 240
 RANK_LABEL_MAX_X = 80
 LEADERBOARD_START_Y = 330
 UI_DUMP_PATH_PREFIX = "/sdcard/maa_voice_hall"
@@ -544,6 +547,64 @@ def _is_contribution_hierarchy(hierarchy: str) -> bool:
         ):
             contribution_tab_selected = True
     return has_rank_list and contribution_tab_selected
+
+
+def _is_profile_hierarchy(hierarchy: str) -> bool:
+    """Identify a user profile from stable accessibility resource IDs."""
+    root = _parse_android_hierarchy(hierarchy)
+    if root is None:
+        return False
+
+    resource_ids = {
+        node.attrib.get("resource-id", "") for node in root.iter("node")
+    }
+    has_user_id = any(
+        resource_id.endswith((":id/tv_user_code", ":id/tv_nice_num"))
+        for resource_id in resource_ids
+    )
+    has_copy_control = any(
+        resource_id.endswith((":id/ll_copy", ":id/iv_copy"))
+        for resource_id in resource_ids
+    )
+    return has_user_id and has_copy_control
+
+
+def _is_hall_list_hierarchy(hierarchy: str) -> bool:
+    """Recognize the hall-list navigation from accessibility text and bounds."""
+    root = _parse_android_hierarchy(hierarchy)
+    if root is None:
+        return False
+
+    category_labels: set[str] = set()
+    has_hall_nav = False
+    for node in root.iter("node"):
+        text = (
+            node.attrib.get("text", "") or node.attrib.get("content-desc", "")
+        ).strip()
+        box = _parse_android_bounds(node.attrib.get("bounds", ""))
+        if not text or box is None:
+            continue
+        x, y, _, _ = box
+        for label, x_range in HALL_CATEGORY_X_RANGES.items():
+            if (
+                label in text
+                and HALL_CATEGORY_Y_RANGE[0] <= y <= HALL_CATEGORY_Y_RANGE[1]
+                and x_range[0] <= x <= x_range[1]
+            ):
+                category_labels.add(label)
+        if text in HALL_LIST_NAV_TEXTS and y >= HALL_NAV_MIN_Y:
+            has_hall_nav = True
+    return len(category_labels) >= 2 or (
+        bool(category_labels) and has_hall_nav
+    )
+
+
+def _has_inner_page_back_control(hierarchy: str) -> bool:
+    root = _parse_android_hierarchy(hierarchy)
+    return root is not None and any(
+        node.attrib.get("resource-id", "").endswith(":id/ivToolbarBack")
+        for node in root.iter("node")
+    )
 
 
 def _ensure_shell_api_types() -> None:
@@ -1058,7 +1119,7 @@ class ContributionScanner(CustomAction):
                     room_id=room_id,
                     room_name=room_name,
                     rank=rank,
-                    click_point=(LEADERBOARD_AVATAR_X, row_y),
+                    click_point=(LEADERBOARD_USER_CODE_X, row_y),
                     output_path=output_path,
                     records=records,
                     processed_users=processed_users,
@@ -1629,30 +1690,56 @@ class ContributionScanner(CustomAction):
                 return
 
     def _return_to_hall_list(self, context: Context, max_attempts: int) -> bool:
-        for _ in range(max_attempts):
+        for attempt in range(max_attempts):
             self._check_stopping(context)
             _, items = self._capture_ocr(context)
-            if self._is_hall_list(items):
+            hierarchy = self._dump_ui_hierarchy()
+            hall_list_by_ocr = self._is_hall_list(items)
+            hall_list_by_hierarchy = _is_hall_list_hierarchy(hierarchy)
+            if hall_list_by_ocr or hall_list_by_hierarchy:
+                if hall_list_by_hierarchy and not hall_list_by_ocr:
+                    self._log("无障碍确认已返回厅列表")
                 return True
 
+            contribution_page = (
+                self._is_contribution_panel(items)
+                or _is_contribution_hierarchy(hierarchy)
+            )
+            profile_page = self._is_profile_page(items) or _is_profile_hierarchy(
+                hierarchy
+            )
             known_inner_page = (
                 self._is_room_page(items)
-                or self._is_contribution_panel(items)
+                or contribution_page
                 or self._is_more_menu(items)
-                or self._is_profile_page(items)
+                or profile_page
+                or _has_inner_page_back_control(hierarchy)
             )
             if not known_inner_page:
                 self._log(
-                    "厅列表识别未命中，保持当前页重试：",
+                    "厅列表识别未命中，按返回键尝试恢复：",
                     [_result_text(item) for item in items[:8]],
                 )
-                self._sleep(context, 0.8)
-                continue
 
             self.controller.post_click_key(4).wait()
             self._sleep(context, 0.7)
+            # OCR titles occasionally disappear or are split while the rank
+            # list is settling.  Use the stable accessibility IDs to verify
+            # that this back action actually left the inner page.
+            after_hierarchy = self._dump_ui_hierarchy()
+            if contribution_page and not _is_contribution_hierarchy(after_hierarchy):
+                self._log("无障碍确认已离开贡献榜")
+            elif profile_page and not _is_profile_hierarchy(after_hierarchy):
+                self._log("无障碍确认已离开用户资料页")
+            if _is_hall_list_hierarchy(after_hierarchy):
+                self._log("无障碍确认已返回厅列表")
+                return True
+            if attempt + 1 < max_attempts and not after_hierarchy:
+                self._log("无障碍层级未获取到，将继续尝试返回")
+
         _, items = self._capture_ocr(context)
-        return self._is_hall_list(items)
+        hierarchy = self._dump_ui_hierarchy()
+        return self._is_hall_list(items) or _is_hall_list_hierarchy(hierarchy)
 
     def _open_hall(self, context: Context, card_y: int, delay: float) -> bool:
         self._check_stopping(context)
