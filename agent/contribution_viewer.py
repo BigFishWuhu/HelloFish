@@ -417,11 +417,57 @@ td { padding: 13px 14px; border-top: 1px solid #e7efed; font-size: 13px; }
 tbody tr:nth-child(even) { background: #fbfdfd; }
 .identity { display: grid; gap: 2px; font-weight: 700; }
 .identity small { color: #819497; font-size: 10px; font-weight: 500; }
+.user-copy { width: 100%; border: 0; padding: 0; color: inherit; background: none; font: inherit; text-align: left; cursor: pointer; }
+.user-copy:hover { color: #176c70; }
+.user-copy:focus-visible { border-radius: 4px; outline: 2px solid #238f86; outline-offset: 3px; }
 .wealth { color: #b27514; font-weight: 900; }
 .empty { padding: 58px 20px; color: #829699; text-align: center; }
 .footnote { color: #71888c; font-size: 12px; text-align: right; }
+.toast { position: fixed; right: 20px; bottom: 20px; z-index: 10; max-width: calc(100vw - 40px); padding: 11px 14px; color: white; background: #17343b; border-radius: 6px; box-shadow: 0 8px 24px rgba(17, 72, 76, .22); opacity: 0; transform: translateY(8px); pointer-events: none; transition: opacity .16s ease, transform .16s ease; }
+.toast.visible { opacity: 1; transform: translateY(0); }
+.clipboard-fallback { position: fixed; left: -9999px; }
 @media (max-width: 720px) { h1 { font-size: 36px; } .summary time { width: 100%; margin-left: 0; } }
 @media print { :root { background: white; } .hero { print-color-adjust: exact; } main { padding: 18px 0; } .panel { border-radius: 0; box-shadow: none; } }
+""".strip()
+
+
+STATIC_EXPORT_JS = """
+const toast = document.querySelector("#toast");
+let toastTimer;
+
+function showToast(message) {
+    toast.textContent = message;
+    toast.classList.add("visible");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove("visible"), 1800);
+}
+
+async function copyUserId(button) {
+    const userId = button.dataset.userId;
+    try {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(userId);
+        } else {
+            const textarea = document.createElement("textarea");
+            textarea.value = userId;
+            textarea.setAttribute("readonly", "");
+            textarea.className = "clipboard-fallback";
+            document.body.append(textarea);
+            textarea.select();
+            const copied = document.execCommand("copy");
+            textarea.remove();
+            if (!copied) throw new Error("copy failed");
+        }
+        showToast(`已复制用户 ID：${userId}`);
+    } catch (_) {
+        showToast("复制失败，请手动选择用户 ID");
+    }
+}
+
+document.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-user-id]");
+    if (button) copyUserId(button);
+});
 """.strip()
 
 
@@ -458,9 +504,11 @@ def export_records_html(
             f'<div class="identity">{_html_text(record["room_name"])}'
             f'<small>ID {_html_text(record["room_id"])}</small></div>'
         )
+        user_id = _html_text(record["user_id"], "")
         user = (
-            f'<div class="identity">{_html_text(record["username"])}'
-            f'<small>ID {_html_text(record["user_id"])}</small></div>'
+            f'<button type="button" class="identity user-copy" data-user-id="{user_id}" '
+            f'title="点击复制用户 ID" aria-label="点击复制用户 ID {user_id}">'
+            f'{_html_text(record["username"])}<small>ID {user_id}</small></button>'
         )
         cells = (
             _format_html_scan_time(record["scanned_at"]),
@@ -498,7 +546,7 @@ def export_records_html(
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'" />
 <title>HelloFish 贡献记录 {date_summary}</title>
 <style>{STATIC_EXPORT_CSS}</style>
 </head>
@@ -525,6 +573,8 @@ def export_records_html(
 </section>
 <p class="footnote">金额按 10 贡献值 = 1 元换算。推测值以本次扫描最后一名为 1；缺失处按后续已知差值平均补算，第 1–3 名取相同值。</p>
 </main>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<script>{STATIC_EXPORT_JS}</script>
 </body>
 </html>
 """
@@ -651,7 +701,8 @@ class ContributionViewerHandler(BaseHTTPRequestHandler):
                     "text/html; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="{filename}"'},
                     content_security_policy=(
-                        "default-src 'none'; style-src 'unsafe-inline'; img-src data:; "
+                        "default-src 'none'; style-src 'unsafe-inline'; "
+                        "script-src 'unsafe-inline'; img-src data:; "
                         "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
                     ),
                 )

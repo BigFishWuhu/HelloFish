@@ -1179,20 +1179,24 @@ class HallListRecognitionTest(unittest.TestCase):
         self.assertEqual(controller.clicks, [("key", 4)])
         reopen.assert_called_once_with(context, 0.1)
 
-    def test_contribution_scan_resets_panel_after_prescan_scroll(self) -> None:
+    def test_contribution_scan_does_not_prescan_or_reset_panel(self) -> None:
         context = SimpleNamespace()
         with (
             patch.object(self.scanner, "_open_contribution_panel"),
             patch.object(
                 self.scanner,
-                "_collect_contribution_rank_data",
-                return_value=({4: {"user_id": "71110"}}, True),
+                "_capture_ocr",
+                return_value=(None, [ocr("房间贡献榜", (330, 55, 150, 35))]),
             ),
+            patch.object(self.scanner, "_dump_ui_hierarchy", return_value=""),
+            patch.object(
+                self.scanner,
+                "_collect_contribution_rank_data",
+            ) as prescan,
             patch.object(
                 self.scanner,
                 "_reset_contribution_panel_after_prescan",
-                return_value=False,
-            ) as reset,
+            ) as prescan_reset,
             patch.object(self.scanner, "_log"),
         ):
             scanned = self.scanner._scan_contribution(
@@ -1205,12 +1209,13 @@ class HallListRecognitionTest(unittest.TestCase):
                 delay=0.1,
                 max_pages=100,
                 max_users=100,
-                include_top3=True,
+                include_top3=False,
                 unknown_gender_as_male=False,
             )
 
-        self.assertFalse(scanned)
-        reset.assert_called_once_with(context, "51795", 0.1)
+        self.assertTrue(scanned)
+        prescan.assert_not_called()
+        prescan_reset.assert_not_called()
 
     def test_record_user_does_not_treat_leaderboard_as_profile(self) -> None:
         controller = FakeController()

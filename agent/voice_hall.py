@@ -976,27 +976,6 @@ class ContributionScanner(CustomAction):
     ) -> bool:
         self._log(f"厅 {room_id} 正在打开贡献榜")
         self._open_contribution_panel(context, delay)
-        rank_data, moved_from_top = self._collect_contribution_rank_data(
-            context=context,
-            room_id=room_id,
-            delay=delay,
-            max_pages=max_pages,
-            max_users=max_users,
-        )
-        _estimate_contribution_values(rank_data)
-        if rank_data:
-            last_rank = max(rank_data)
-            self._log(
-                f"厅 {room_id} 榜单预扫描完成：{len(rank_data)} 人，"
-                f"假设本次最后一名（第 {last_rank} 名）贡献值为 1"
-            )
-        if moved_from_top and not self._reset_contribution_panel_after_prescan(
-            context,
-            room_id,
-            delay,
-        ):
-            self._log(f"厅 {room_id} 贡献榜未能重置到第一页，取消资料扫描")
-            return False
 
         seen_ranks: set[int] = set()
         page_fingerprints: set[tuple[int, ...]] = set()
@@ -1007,6 +986,8 @@ class ContributionScanner(CustomAction):
             image, items = self._capture_ocr(context)
             hierarchy = self._dump_ui_hierarchy()
             hierarchy_top3, hierarchy_rows = _find_contribution_targets(hierarchy)
+            rank_rows = hierarchy_rows or self._find_rank_rows(items)
+            rank_data = _find_contribution_row_data(hierarchy)
             if not (
                 self._is_contribution_panel(items)
                 or _is_contribution_hierarchy(hierarchy)
@@ -1039,12 +1020,7 @@ class ContributionScanner(CustomAction):
                         delay=delay,
                         unknown_gender_as_male=unknown_gender_as_male,
                         record_genders=record_genders,
-                        contribution_gap=rank_data.get(rank, {}).get(
-                            "contribution_gap"
-                        ),
-                        estimated_contribution_value=rank_data.get(rank, {}).get(
-                            "estimated_contribution_value"
-                        ),
+                        contribution_gap=rank_data.get(rank, {}).get("contribution_gap"),
                         leaderboard_user_id=rank_data.get(rank, {}).get("user_id"),
                         from_leaderboard=True,
                     )
@@ -1052,7 +1028,6 @@ class ContributionScanner(CustomAction):
                         self._log(f"厅 {room_id} 已完成贡献榜前 {max_users} 名的扫描")
                         return True
 
-            rank_rows = hierarchy_rows or self._find_rank_rows(items)
             unopenable_ranks = _find_unopenable_contribution_ranks(hierarchy)
             unopenable_ranks.update(
                 self._find_unopenable_ocr_ranks(items, rank_rows)
@@ -1090,12 +1065,7 @@ class ContributionScanner(CustomAction):
                     delay=delay,
                     unknown_gender_as_male=unknown_gender_as_male,
                     record_genders=record_genders,
-                    contribution_gap=rank_data.get(rank, {}).get(
-                        "contribution_gap"
-                    ),
-                    estimated_contribution_value=rank_data.get(rank, {}).get(
-                        "estimated_contribution_value"
-                    ),
+                    contribution_gap=rank_data.get(rank, {}).get("contribution_gap"),
                     leaderboard_user_id=rank_data.get(rank, {}).get("user_id"),
                     from_leaderboard=True,
                 )

@@ -299,8 +299,10 @@ class ContributionViewerTest(unittest.TestCase):
         self.assertIn("25 元", document)
         self.assertIn("150 元", document)
         self.assertIn("ID u2", document)
+        self.assertIn('data-user-id="u2"', document)
+        self.assertIn("navigator.clipboard.writeText(userId)", document)
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", document)
-        self.assertNotIn("<script>", document)
+        self.assertNotIn("<script>alert(1)</script>", document)
         self.assertNotIn("上一页", document)
 
     def test_html_export_endpoint_downloads_a_standalone_file(self) -> None:
@@ -324,6 +326,10 @@ class ContributionViewerTest(unittest.TestCase):
                 self.assertEqual(response.status, HTTPStatus.OK)
                 self.assertEqual(response.headers.get_content_type(), "text/html")
                 self.assertIn(".html", response.headers["Content-Disposition"])
+                self.assertIn(
+                    "script-src 'unsafe-inline'",
+                    response.headers["Content-Security-Policy"],
+                )
                 self.assertIn("贡献记录", response.read().decode("utf-8"))
         finally:
             server.shutdown()

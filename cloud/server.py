@@ -379,7 +379,8 @@ class CloudHandler(BaseHTTPRequestHandler):
                 self.send_header("X-Content-Type-Options", "nosniff")
                 self.send_header(
                     "Content-Security-Policy",
-                    "default-src 'none'; style-src 'unsafe-inline'; img-src data:; "
+                    "default-src 'none'; style-src 'unsafe-inline'; "
+                    "script-src 'unsafe-inline'; img-src data:; "
                     "base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
                 )
                 self.send_header("Cache-Control", "no-store")

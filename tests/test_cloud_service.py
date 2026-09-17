@@ -74,6 +74,10 @@ class CloudServiceTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(response_headers.get_content_type(), "text/html")
         self.assertIn(".html", response_headers["Content-Disposition"])
+        self.assertIn(
+            "script-src 'unsafe-inline'",
+            response_headers["Content-Security-Policy"],
+        )
         self.assertIn("贡献记录", body.decode("utf-8"))
 
     def test_first_user_setup_is_one_time(self) -> None:

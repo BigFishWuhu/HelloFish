@@ -260,19 +260,47 @@ function startExport() {
     showToast(`正在导出 ${columns.length} 列，筛选条件已保留`);
 }
 
-function startHtmlExport() {
+async function startHtmlExport() {
+    const button = $("#start-html-export");
     persistFilters();
     const params = new URLSearchParams(queryParams());
     params.delete("page");
     params.delete("page_size");
-    const download = document.createElement("a");
-    download.href = `/api/export.html?${params.toString()}`;
-    download.hidden = true;
-    document.body.append(download);
-    download.click();
-    download.remove();
-    $("#export-dialog").close();
-    showToast("正在导出静态 HTML，筛选条件已保留");
+    button.disabled = true;
+    $("#export-status").textContent = "正在生成静态 HTML…";
+    try {
+        const response = await fetch(`/api/export.html?${params.toString()}`);
+        if (response.status === 401) {
+            showLogin();
+            throw new Error("登录已失效，请重新登录");
+        }
+        if (!response.ok) {
+            let message = "导出失败";
+            try {
+                message = (await response.json()).error || message;
+            } catch (_) {
+                // Keep the generic message when the response is not JSON.
+            }
+            throw new Error(message);
+        }
+        const blobUrl = URL.createObjectURL(await response.blob());
+        const download = document.createElement("a");
+        const disposition = response.headers.get("Content-Disposition") || "";
+        const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1];
+        download.href = blobUrl;
+        download.download = filename || "HelloFish-contributions.html";
+        download.hidden = true;
+        document.body.append(download);
+        download.click();
+        download.remove();
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+        $("#export-dialog").close();
+        showToast("静态 HTML 已生成");
+    } catch (error) {
+        $("#export-status").textContent = `导出失败：${error.message}`;
+    } finally {
+        button.disabled = false;
+    }
 }
 
 async function loadRecords() {
