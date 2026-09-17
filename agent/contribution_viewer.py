@@ -40,6 +40,8 @@ EXPORT_COLUMNS = {
     "room_name": "厅名称",
     "room_id": "厅 ID",
     "rank": "厅内排名",
+    "contribution_gap": "距前一名",
+    "estimated_contribution_value": "推测贡献值",
     "username": "用户名",
     "user_id": "用户 ID",
     "gender": "性别",
@@ -55,6 +57,8 @@ DEFAULT_EXPORT_COLUMNS = (
     "room_name",
     "room_id",
     "rank",
+    "contribution_gap",
+    "estimated_contribution_value",
     "username",
     "user_id",
     "gender",
@@ -279,7 +283,8 @@ def query_records(
             SELECT
                 c.room_id, c.room_name, c.rank, c.user_id, c.username,
                 c.gender, c.ip, c.close_friend_count, c.wealth_level,
-                c.charm_level, c.scanned_at, c.scan_date,
+                c.charm_level, c.contribution_gap, c.estimated_contribution_value,
+                c.scanned_at, c.scan_date,
                 thresholds.min_contribution AS wealth_min_contribution
             FROM contributions AS c
             LEFT JOIN wealth_level_thresholds AS thresholds
@@ -314,17 +319,27 @@ def parse_export_columns(query: dict[str, list[str]]) -> list[str]:
     return columns
 
 
+def _format_yuan_amount(value: Any) -> str:
+    amount = float(value)
+    if amount < 10_000:
+        display = f"{amount:.2f}".rstrip("0").rstrip(".")
+        return f"{display}元"
+    display = f"{amount / 10_000:.2f}".rstrip("0").rstrip(".")
+    return f"{display}万元"
+
+
 def _export_value(record: sqlite3.Row, column: str) -> Any:
     if column == "wealth_min_yuan":
         contribution = record["wealth_min_contribution"]
         if contribution is None:
             return "???"
-        yuan = contribution / 10
-        return int(yuan) if yuan.is_integer() else yuan
+        return _format_yuan_amount(contribution / 10)
     value = record[column]
     if value is None and column in {
         "wealth_level",
         "wealth_min_contribution",
+        "contribution_gap",
+        "estimated_contribution_value",
         "charm_level",
     }:
         return "???"
@@ -350,7 +365,8 @@ def export_records_csv(
             SELECT
                 c.room_id, c.room_name, c.rank, c.user_id, c.username,
                 c.gender, c.ip, c.close_friend_count, c.wealth_level,
-                c.charm_level, c.scanned_at, c.scan_date,
+                c.charm_level, c.contribution_gap, c.estimated_contribution_value,
+                c.scanned_at, c.scan_date,
                 thresholds.min_contribution AS wealth_min_contribution
             FROM contributions AS c
             LEFT JOIN wealth_level_thresholds AS thresholds

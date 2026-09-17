@@ -11,6 +11,8 @@ CONTRIBUTION_COLUMNS = (
     "room_id",
     "room_name",
     "rank",
+    "contribution_gap",
+    "estimated_contribution_value",
     "user_id",
     "username",
     "gender",
@@ -50,6 +52,8 @@ class VoiceHallDatabase:
                     room_id TEXT NOT NULL,
                     room_name TEXT,
                     rank INTEGER,
+                    contribution_gap INTEGER,
+                    estimated_contribution_value INTEGER,
                     user_id TEXT NOT NULL,
                     username TEXT,
                     gender TEXT,
@@ -99,6 +103,15 @@ class VoiceHallDatabase:
                     ON next_level.level = c.wealth_level + 1;
                 """
             )
+            existing_columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(contributions)")
+            }
+            for column in ("contribution_gap", "estimated_contribution_value"):
+                if column not in existing_columns:
+                    connection.execute(
+                        f"ALTER TABLE contributions ADD COLUMN {column} INTEGER"
+                    )
             connection.executemany(
                 """
                 INSERT INTO wealth_level_thresholds (level, min_contribution)
@@ -138,6 +151,8 @@ class VoiceHallDatabase:
             ON CONFLICT(room_id, user_id, scan_date) DO UPDATE SET
                 room_name = excluded.room_name,
                 rank = excluded.rank,
+                contribution_gap = excluded.contribution_gap,
+                estimated_contribution_value = excluded.estimated_contribution_value,
                 username = excluded.username,
                 gender = excluded.gender,
                 gender_source = excluded.gender_source,

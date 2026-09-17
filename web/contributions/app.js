@@ -66,12 +66,9 @@ function formatChineseNumber(value, suffix) {
     const number = Number(value);
     if (!Number.isFinite(number)) return "???";
     const display = Number.isInteger(number) ? String(number) : number.toFixed(1).replace(/\.0$/, "");
-    if (number <= 10_000) return `${display}${suffix}`;
-    const wan = Math.floor(number / 10_000);
-    const remainder = number - wan * 10_000;
-    if (remainder === 0) return `${wan}万${suffix}`;
-    const tail = Number.isInteger(remainder) ? String(remainder) : remainder.toFixed(1).replace(/\.0$/, "");
-    return `${wan}万${tail}${suffix}`;
+    if (number < 10_000) return `${display}${suffix}`;
+    const wan = (number / 10_000).toFixed(2).replace(/\.?0+$/, "");
+    return `${wan}万${suffix}`;
 }
 
 function formatThreshold(contribution) {
@@ -80,6 +77,10 @@ function formatThreshold(contribution) {
         return formatChineseNumber(contribution, " 贡献值");
     }
     return formatChineseNumber(Number(contribution) / 10, " 元");
+}
+
+function formatContributionValue(contribution) {
+    return formatThreshold(contribution);
 }
 
 function formatScanTime(value) {
@@ -165,6 +166,8 @@ function renderRecords() {
             scanned,
             room,
             record.rank,
+            formatContributionValue(record.contribution_gap),
+            formatContributionValue(record.estimated_contribution_value),
             user,
             record.gender,
             record.ip,
@@ -177,13 +180,15 @@ function renderRecords() {
             const cell = document.createElement("td");
             if (value instanceof Node) cell.append(value);
             else cell.textContent = escapeText(value);
-            if (index === 7) cell.className = "wealth";
+            if (index === 9) cell.className = "wealth";
             row.append(cell);
         });
         body.append(row);
     }
     $("#empty-state").classList.toggle("hidden", state.records.length !== 0);
     $("#threshold-heading").textContent = controls.unit.value === "yuan" ? "等级最低金额" : "等级最低贡献值";
+    $("#gap-heading").textContent = controls.unit.value === "yuan" ? "距前一名金额" : "距前一名贡献值";
+    $("#estimated-heading").textContent = controls.unit.value === "yuan" ? "推测金额" : "推测贡献值";
 }
 
 function queryParams() {

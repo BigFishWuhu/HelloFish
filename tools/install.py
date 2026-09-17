@@ -83,6 +83,14 @@ def install_chores():
         working_dir / "LICENSE",
         install_path,
     )
+    shutil.copy2(
+        working_dir / "tools" / "updater.py",
+        install_path,
+    )
+    shutil.copy2(
+        working_dir / "tools" / "update.bat",
+        install_path,
+    )
 
 
 def install_agent():

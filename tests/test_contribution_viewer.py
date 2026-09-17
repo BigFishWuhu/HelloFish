@@ -27,6 +27,7 @@ from contribution_viewer import (  # noqa: E402
     load_settings,
     parse_export_columns,
     query_records,
+    _format_yuan_amount,
     save_settings,
 )
 from voice_hall_storage import VoiceHallDatabase  # noqa: E402
@@ -45,6 +46,8 @@ class ContributionViewerTest(unittest.TestCase):
                 "room_id": "100",
                 "room_name": "海风厅",
                 "rank": 1,
+                "contribution_gap": 250,
+                "estimated_contribution_value": 1_500,
                 "user_id": "u1",
                 "username": "甲",
                 "gender": "男",
@@ -111,6 +114,8 @@ class ContributionViewerTest(unittest.TestCase):
         result = query_records(self.database_path, self.settings_path, query)
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["records"][0]["user_id"], "u1")
+        self.assertEqual(result["records"][0]["contribution_gap"], 250)
+        self.assertEqual(result["records"][0]["estimated_contribution_value"], 1_500)
         self.assertIsNotNone(result["records"][0]["wealth_min_contribution"])
 
     def test_default_today_uses_china_time_when_host_is_still_in_utc_yesterday(self) -> None:
@@ -212,6 +217,50 @@ class ContributionViewerTest(unittest.TestCase):
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[1][:2], ["甲", "u1"])
         self.assertNotEqual(rows[1][2], "")
+
+    def test_csv_export_includes_relative_and_estimated_contributions(self) -> None:
+        query = RecordQuery.from_query({}, today=date(2026, 9, 14))
+        payload = export_records_csv(
+            self.database_path,
+            self.settings_path,
+            query,
+            ["contribution_gap", "estimated_contribution_value"],
+        )
+        rows = list(csv.reader(io.StringIO(payload.decode("utf-8-sig"))))
+        self.assertEqual(rows[0], ["距前一名", "推测贡献值"])
+        self.assertEqual(rows[1], ["250", "1500"])
+
+    def test_csv_export_formats_yuan_amounts_by_wan(self) -> None:
+        self.assertEqual(_format_yuan_amount(9999), "9999元")
+        self.assertEqual(_format_yuan_amount(10000), "1万元")
+        self.assertEqual(_format_yuan_amount(12345), "1.23万元")
+        record = {
+            "room_id": "400",
+            "room_name": "金额厅",
+            "rank": 1,
+            "user_id": "u4",
+            "username": "丁",
+            "gender": "男",
+            "gender_source": "icon",
+            "ip": "北京",
+            "close_friend_count": 0,
+            "wealth_level": 200,
+            "charm_level": 1,
+            "level_sample_path": None,
+            "scanned_at": "2026-09-14T10:00:00+08:00",
+        }
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            VoiceHallDatabase._upsert_contribution(connection, record)
+        query = RecordQuery.from_query({}, today=date(2026, 9, 14))
+        payload = export_records_csv(
+            self.database_path,
+            self.settings_path,
+            query,
+            ["wealth_min_yuan"],
+        )
+        rows = list(csv.reader(io.StringIO(payload.decode("utf-8-sig"))))
+        self.assertEqual(rows[0], ["等级最低金额（元）"])
+        self.assertTrue(rows[1][0].endswith(("元", "万元")))
 
     def test_export_columns_are_allowlisted_and_deduplicated(self) -> None:
         columns = parse_export_columns(

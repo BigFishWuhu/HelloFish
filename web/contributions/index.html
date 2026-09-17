@@ -80,9 +80,9 @@
                     <input id="username" type="search" placeholder="包含匹配" />
                 </div>
                 <div class="field compact">
-                    <label for="unit">门槛显示</label>
+                    <label for="unit">数值显示</label>
                     <select id="unit">
-                        <option value="yuan">金额（元）</option>
+                        <option value="yuan" selected>金额（元）</option>
                         <option value="contribution">贡献值</option>
                     </select>
                 </div>
@@ -111,6 +111,8 @@
                                 <th>日期 / 时间</th>
                                 <th>厅</th>
                                 <th>排名</th>
+                                <th id="gap-heading">距前一名金额</th>
+                                <th id="estimated-heading">推测金额</th>
                                 <th>用户</th>
                                 <th>性别</th>
                                 <th>IP 属地</th>
@@ -133,7 +135,7 @@
                     <button id="next-page" class="secondary" type="button">下一页</button>
                 </footer>
             </section>
-            <p class="footnote">金额按 10 贡献值 = 1 元换算；展示的是财富等级的最低门槛，并非用户精确贡献额。</p>
+            <p class="footnote">金额按 10 贡献值 = 1 元换算。推测值以本次扫描最后一名为 1；缺失处按后续已知差值平均补算，第 1–3 名取相同值。</p>
         </main>
 
         <dialog id="settings-dialog">
@@ -184,6 +186,8 @@
                     <label><input type="checkbox" data-export-column="room_name" checked />厅名称</label>
                     <label><input type="checkbox" data-export-column="room_id" checked />厅 ID</label>
                     <label><input type="checkbox" data-export-column="rank" checked />厅内排名</label>
+                    <label><input type="checkbox" data-export-column="contribution_gap" checked />距前一名</label>
+                    <label><input type="checkbox" data-export-column="estimated_contribution_value" checked />推测贡献值</label>
                     <label><input type="checkbox" data-export-column="username" checked />用户名</label>
                     <label><input type="checkbox" data-export-column="user_id" checked />用户 ID</label>
                     <label><input type="checkbox" data-export-column="gender" checked />性别</label>

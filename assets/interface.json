@@ -47,6 +47,8 @@
             "option": [
                 "ContributionRankLimit",
                 "SkipScannedToday",
+                "ScanGenderFilter",
+                "RecordGenders",
                 "CloudUpload"
             ]
         },
@@ -140,6 +142,68 @@
                 }
             ],
             "default_case": "No"
+        },
+        "ScanGenderFilter": {
+            "type": "input",
+            "label": "跳过厅设置",
+            "description": "设置不进入的厅 ID，多个值用逗号或空格分隔。",
+            "inputs": [
+                {
+                    "name": "skip_room_ids",
+                    "label": "跳过厅 ID",
+                    "default": "",
+                    "pipeline_type": "string"
+                }
+            ],
+            "pipeline_override": {
+                "VoiceHallScanStart": {
+                    "custom_action_param": {
+                        "skip_room_ids": "{skip_room_ids}"
+                    }
+                }
+            }
+        },
+        "RecordGenders": {
+            "type": "checkbox",
+            "label": "记录性别",
+            "description": "只记录勾选的性别；进入资料页识别后，不符合条件的用户会立即返回贡献榜。",
+            "cases": [
+                {
+                    "name": "Male",
+                    "label": "男",
+                    "pipeline_override": {
+                        "VoiceHallScanStart": {
+                            "custom_action_param": {
+                                "record_gender_male": true
+                            }
+                        }
+                    }
+                },
+                {
+                    "name": "Female",
+                    "label": "女",
+                    "pipeline_override": {
+                        "VoiceHallScanStart": {
+                            "custom_action_param": {
+                                "record_gender_female": true
+                            }
+                        }
+                    }
+                },
+                {
+                    "name": "Unknown",
+                    "label": "未知",
+                    "pipeline_override": {
+                        "VoiceHallScanStart": {
+                            "custom_action_param": {
+                                "record_gender_unknown": true
+                            }
+                        }
+                    }
+                }
+            ],
+            "default_case": ["Male", "Female", "Unknown"],
+            "min_count": 1
         },
         "CloudUpload": {
             "type": "input",

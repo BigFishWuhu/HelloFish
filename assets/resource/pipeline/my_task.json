@@ -10,6 +10,7 @@
             "max_hall_pages": 100,
             "max_contribution_pages": 100,
             "max_users_per_hall": 100,
+            "skip_room_ids": "",
             "skip_scanned_today": false,
             "include_top3": true,
             "unknown_gender_as_male": false,

@@ -19,9 +19,15 @@ from voice_hall import (  # noqa: E402
     _ScanStopped,
     _build_ui_dump_command,
     _ensure_shell_api_types,
+    _estimate_contribution_values,
     _extract_hall_id,
+    _find_contribution_row_data,
     _find_contribution_targets,
     _find_profile_copy_target,
+    _normalize_gender_selection,
+    _normalize_setting_list,
+    _selected_record_genders,
+    _should_record_gender,
     _is_contribution_hierarchy,
     _should_save_level_samples,
     _was_scanned_on,
@@ -237,6 +243,75 @@ class HallListRecognitionTest(unittest.TestCase):
         </hierarchy>"""
         self.assertFalse(_is_contribution_hierarchy(hierarchy))
 
+    def test_contribution_rows_read_ids_and_relative_gaps_from_hierarchy(self) -> None:
+        hierarchy = """<?xml version='1.0'?>
+        <hierarchy>
+          <node text="" resource-id="app:id/iv_avatar_rank_2"
+                bounds="[83,299][179,395]" />
+          <node text="" resource-id="app:id/iv_avatar_rank_1"
+                bounds="[301,276][420,395]" />
+          <node text="" resource-id="app:id/iv_avatar_rank_3"
+                bounds="[543,299][639,395]" />
+          <node text="66666" resource-id="app:id/tv_nice_num"
+                bounds="[121,467][173,485]" />
+          <node text="140000" resource-id="app:id/tv_nice_num"
+                bounds="[347,467][407,485]" />
+          <node text="98000" resource-id="app:id/tv_nice_num"
+                bounds="[581,467][633,485]" />
+          <node text="4" resource-id="app:id/tv_rank"
+                bounds="[13,604][94,636]" />
+          <node text="距前一名79786" resource-id="app:id/tv_value"
+                bounds="[528,604][685,636]" />
+          <node text="ID:23512216" resource-id="app:id/tv_user_code"
+                bounds="[194,629][325,661]" />
+        </hierarchy>"""
+
+        rows = _find_contribution_row_data(hierarchy)
+
+        self.assertEqual(rows[1]["user_id"], "140000")
+        self.assertEqual(rows[2]["user_id"], "66666")
+        self.assertEqual(rows[3]["user_id"], "98000")
+        self.assertEqual(rows[4]["user_id"], "23512216")
+        self.assertEqual(rows[4]["contribution_gap"], 79_786)
+
+    def test_estimated_contribution_starts_last_rank_at_one(self) -> None:
+        rows = {
+            1: {"contribution_gap": None},
+            2: {"contribution_gap": None},
+            3: {"contribution_gap": None},
+            4: {"contribution_gap": 10},
+            5: {"contribution_gap": 5},
+            6: {"contribution_gap": 3},
+        }
+
+        _estimate_contribution_values(rows)
+
+        self.assertEqual(rows[1]["estimated_contribution_value"], 19)
+        self.assertEqual(rows[2]["estimated_contribution_value"], 19)
+        self.assertEqual(rows[3]["estimated_contribution_value"], 19)
+        self.assertEqual(rows[4]["estimated_contribution_value"], 9)
+        self.assertEqual(rows[5]["estimated_contribution_value"], 4)
+        self.assertEqual(rows[6]["estimated_contribution_value"], 1)
+
+    def test_estimated_contribution_fills_missing_rank_from_known_gaps_behind(self) -> None:
+        rows = {
+            1: {"contribution_gap": None},
+            2: {"contribution_gap": None},
+            3: {"contribution_gap": None},
+            4: {"contribution_gap": 10},
+            6: {"contribution_gap": 3},
+            7: {"contribution_gap": 7},
+        }
+
+        _estimate_contribution_values(rows)
+
+        self.assertEqual(rows[7]["estimated_contribution_value"], 1)
+        self.assertEqual(rows[6]["estimated_contribution_value"], 8)
+        self.assertEqual(rows[4]["estimated_contribution_value"], 16)
+        self.assertEqual(rows[3]["estimated_contribution_value"], 26)
+        self.assertEqual(rows[2]["estimated_contribution_value"], 26)
+        self.assertEqual(rows[1]["estimated_contribution_value"], 26)
+
     def test_profile_id_comes_from_copy_control_not_ocr(self) -> None:
         hierarchy = """<?xml version='1.0' encoding='UTF-8'?>
         <hierarchy>
@@ -379,6 +454,7 @@ class HallListRecognitionTest(unittest.TestCase):
 
         with (
             patch.object(self.scanner, "_copy_profile_id", return_value=None),
+            patch.object(self.scanner, "_dump_ui_hierarchy", return_value=""),
             patch.object(self.scanner, "_capture_ocr", return_value=(None, items)),
             patch(
                 "voice_hall.VoiceHallDatabase.upsert_contribution",
@@ -409,6 +485,39 @@ class HallListRecognitionTest(unittest.TestCase):
         self.assertIn(("120323", "66666"), processed_users)
         self.assertEqual(controller.clicks, [(362, 335), ("key", 4)])
         upsert_database.assert_called_once()
+
+    def test_record_user_returns_immediately_when_profile_gender_is_filtered(self) -> None:
+        controller = FakeController()
+        self.scanner.controller = controller
+
+        with (
+            patch.object(self.scanner, "_wait_for_profile_page", return_value=(None, [])),
+            patch.object(self.scanner, "_dump_ui_hierarchy", return_value=""),
+            patch.object(self.scanner, "_extract_gender", return_value=("女", "icon:♀")),
+            patch.object(self.scanner, "_copy_profile_id") as copy_profile_id,
+            patch.object(self.scanner, "_read_profile_details_with_retry") as read_details,
+            patch.object(self.scanner, "_sleep"),
+            patch.object(self.scanner, "_log"),
+        ):
+            result = self.scanner._record_user(
+                context=SimpleNamespace(),
+                room_id="120323",
+                room_name="测试厅",
+                rank=5,
+                click_point=(130, 610),
+                output_path=Path("result.sqlite3"),
+                records=[],
+                processed_users=set(),
+                delay=0.1,
+                unknown_gender_as_male=False,
+                record_genders={"男"},
+                from_leaderboard=True,
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(controller.clicks, [(130, 610), ("key", 4)])
+        copy_profile_id.assert_not_called()
+        read_details.assert_not_called()
 
     def test_record_user_recovers_from_duplicate_stale_hierarchy_id(self) -> None:
         controller = FakeController()
@@ -519,12 +628,16 @@ class HallListRecognitionTest(unittest.TestCase):
                 processed_users=processed_users,
                 delay=0.1,
                 unknown_gender_as_male=True,
+                contribution_gap=3_426,
+                estimated_contribution_value=20_000,
         )
 
         self.assertEqual(records[-1]["user_id"], "23342974")
         persisted = upsert_database.call_args.args[0]
         self.assertEqual(persisted["room_id"], "120323")
         self.assertEqual(persisted["rank"], 6)
+        self.assertEqual(persisted["contribution_gap"], 3_426)
+        self.assertEqual(persisted["estimated_contribution_value"], 20_000)
 
     def test_gender_uses_icon_color_on_copy_button_row(self) -> None:
         hierarchy = """<?xml version='1.0'?>
@@ -954,6 +1067,8 @@ class HallListRecognitionTest(unittest.TestCase):
                 "room_id": "64900",
                 "room_name": "测试厅",
                 "rank": 2,
+                "contribution_gap": 120,
+                "estimated_contribution_value": 345,
                 "user_id": "23437464",
                 "username": "用户23437464",
                 "wealth_level": 77,
@@ -974,6 +1089,8 @@ class HallListRecognitionTest(unittest.TestCase):
 
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["rank"], 1)
+            self.assertEqual(rows[0]["contribution_gap"], 120)
+            self.assertEqual(rows[0]["estimated_contribution_value"], 345)
             self.assertEqual(rows[0]["username"], "新名字")
             self.assertEqual(rows[0]["wealth_min_contribution"], 95_000)
             self.assertEqual(rows[0]["next_wealth_level"], 78)
@@ -1337,6 +1454,8 @@ class HallListRecognitionTest(unittest.TestCase):
         rank_limit = interface["option"]["ContributionRankLimit"]
         self.assertIn("ContributionRankLimit", scan_task["option"])
         self.assertIn("SkipScannedToday", scan_task["option"])
+        self.assertIn("ScanGenderFilter", scan_task["option"])
+        self.assertIn("RecordGenders", scan_task["option"])
         self.assertEqual(rank_limit["inputs"][0]["default"], "100")
         self.assertEqual(
             pipeline["VoiceHallScanStart"]["custom_action_param"][
@@ -1345,7 +1464,18 @@ class HallListRecognitionTest(unittest.TestCase):
             100,
         )
         skip_today = interface["option"]["SkipScannedToday"]
+        record_genders = interface["option"]["RecordGenders"]
         self.assertEqual(skip_today["default_case"], "No")
+        self.assertEqual(record_genders["type"], "checkbox")
+        self.assertEqual(
+            record_genders["default_case"],
+            ["Male", "Female", "Unknown"],
+        )
+        self.assertEqual(record_genders["min_count"], 1)
+        self.assertEqual(
+            [case["label"] for case in record_genders["cases"]],
+            ["男", "女", "未知"],
+        )
         self.assertEqual(
             rank_limit["pipeline_override"].keys(),
             {"VoiceHallScanStart"},
@@ -1374,6 +1504,24 @@ class HallListRecognitionTest(unittest.TestCase):
             {task["entry"] for task in interface["task"]},
         )
         self.assertNotIn("OpenContributionViewer", pipeline)
+
+    def test_scan_gender_filter_normalizes_aliases_and_filters_unknown(self) -> None:
+        self.assertEqual(_normalize_setting_list("123, 456\n789"), {"123", "456", "789"})
+        self.assertEqual(_normalize_gender_selection("male,女"), {"男", "女"})
+        self.assertFalse(_should_record_gender("未知", {"女"}))
+        self.assertTrue(_should_record_gender("女", {"女"}))
+        self.assertFalse(_should_record_gender("男", {"女"}))
+        self.assertEqual(_selected_record_genders({}), {"男", "女", "未知"})
+        self.assertEqual(
+            _selected_record_genders(
+                {
+                    "record_gender_male": True,
+                    "record_gender_female": False,
+                    "record_gender_unknown": True,
+                }
+            ),
+            {"男", "未知"},
+        )
 
     def test_scanned_hall_state_only_matches_the_same_day(self) -> None:
         state = {"scanned_at": "2026-09-14T23:59:59+08:00"}
@@ -1588,7 +1736,7 @@ class HallListRecognitionTest(unittest.TestCase):
 
             self.assertTrue(result)
             self.assertEqual(scan.call_count, 2)
-            self.assertEqual(enter.call_count, 2)
+            self.assertEqual(enter.call_count, 3)
             self.assertEqual(
                 [call.args[1] for call in sleep.call_args_list],
                 [3.0, 1.5],
@@ -1655,7 +1803,7 @@ class HallListRecognitionTest(unittest.TestCase):
 
             self.assertTrue(result)
             self.assertEqual(scan.call_count, 2)
-            self.assertEqual(enter.call_count, 2)
+            self.assertEqual(enter.call_count, 3)
             state = json.loads(state_path.read_text(encoding="utf-8"))
             self.assertEqual(
                 state["visited_halls"]["12345"]["scanned_at"],

@@ -285,6 +285,169 @@ def _classify_gender_color_points(roi: Any) -> str | None:
     return None
 
 
+def _parse_contribution_number(text: str) -> int | None:
+    value = text.strip().replace(",", "")
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)(万|亿)?(?:\+)?", value)
+    if not match:
+        return None
+    number = float(match.group(1))
+    unit = match.group(2)
+    if unit == "万":
+        number *= 10_000
+    elif unit == "亿":
+        number *= 100_000_000
+    return int(number)
+
+
+def _parse_contribution_gap(text: str) -> int | None:
+    normalized = text.strip().replace(" ", "").replace("，", ",")
+    match = re.fullmatch(r"距(?:离)?前一名[:：]?(.*)", normalized)
+    return _parse_contribution_number(match.group(1)) if match else None
+
+
+def _estimate_contribution_values(
+    rows: dict[int, dict[str, Any]],
+) -> dict[int, dict[str, Any]]:
+    if not rows:
+        return rows
+    for row in rows.values():
+        row["estimated_contribution_value"] = None
+    last_rank = max(rows)
+    rows[last_rank]["estimated_contribution_value"] = 1
+    all_known_gaps = [
+        int(row["contribution_gap"])
+        for rank, row in rows.items()
+        if rank >= 4 and row.get("contribution_gap") is not None
+    ]
+    known_gaps_behind: list[int] = []
+    current_value = 1
+    for rank in range(last_rank, 3, -1):
+        current = rows.get(rank)
+        gap = current.get("contribution_gap") if current else None
+        if gap is not None:
+            step = int(gap)
+            known_gaps_behind.append(step)
+        else:
+            candidates = known_gaps_behind or all_known_gaps
+            step = int(sum(candidates) / len(candidates) + 0.5) if candidates else 0
+        current_value += step
+        previous = rows.get(rank - 1)
+        if previous is not None:
+            previous["estimated_contribution_value"] = current_value
+
+    top_value = rows.get(3, {}).get("estimated_contribution_value")
+    if top_value is None:
+        top_value = current_value
+    for rank in (1, 2, 3):
+        if rank in rows:
+            rows[rank]["estimated_contribution_value"] = top_value
+    return rows
+
+
+def _find_contribution_row_data(
+    hierarchy: str,
+) -> dict[int, dict[str, Any]]:
+    """Read leaderboard row metadata from the accessibility hierarchy only."""
+    root = _parse_android_hierarchy(hierarchy)
+    if root is None:
+        return {}
+
+    ranks: list[tuple[int, tuple[int, int, int, int]]] = []
+    anchors: list[tuple[int, tuple[int, int, int, int]]] = []
+    gaps: list[tuple[int, tuple[int, int, int, int]]] = []
+    ids: list[tuple[str, tuple[int, int, int, int]]] = []
+    value_suffixes = (
+        ":id/tv_contribution",
+        ":id/tv_contribution_num",
+        ":id/tv_score",
+        ":id/tv_integral",
+        ":id/tv_amount",
+        ":id/tv_value",
+        ":id/tv_num",
+    )
+    id_suffixes = (
+        ":id/tv_user_id",
+        ":id/tv_user_code",
+        ":id/tv_uid",
+        ":id/tv_id",
+        ":id/tv_nice_num",
+    )
+    for node in root.iter("node"):
+        box = _parse_android_bounds(node.attrib.get("bounds", ""))
+        if not box:
+            continue
+        resource_id = node.attrib.get("resource-id", "")
+        text = (
+            node.attrib.get("text", "")
+            or node.attrib.get("content-desc", "")
+        ).strip()
+        if resource_id.endswith(":id/tv_rank") and re.fullmatch(r"\d{1,3}", text):
+            rank = int(text)
+            if rank >= 4:
+                ranks.append((rank, box))
+        if re.search(r":id/iv_avatar_rank_[123]$", resource_id):
+            anchors.append((int(resource_id.rsplit("_", 1)[-1]), box))
+        resource_lower = resource_id.lower()
+        if resource_id.endswith(value_suffixes) or any(
+            token in resource_lower
+            for token in ("contribution", "score", "integral", "amount")
+        ):
+            gap = _parse_contribution_gap(text)
+            if gap is not None:
+                gaps.append((gap, box))
+        if (
+            resource_id.endswith(id_suffixes)
+            or any(
+                token in resource_lower
+                for token in ("user_id", "userid", "uid", "user_code")
+            )
+            or re.fullmatch(
+                r"(?:ID|靓号|用户编号)[:： ]*\d{4,12}",
+                text,
+                re.IGNORECASE,
+            )
+        ) and re.search(r"\d{4,12}", text):
+            text = re.search(r"\d{4,12}", text).group(0)
+            ids.append((text, box))
+
+    rows: dict[int, dict[str, Any]] = {}
+    row_anchors = [(rank, box) for rank, box in ranks] + anchors
+    for rank, rank_box in row_anchors:
+        center_y = _center(rank_box)[1]
+        candidates = [
+            (abs(_center(box)[1] - center_y), gap)
+            for gap, box in gaps
+            if abs(_center(box)[1] - center_y) <= 70
+        ]
+        candidate = min(candidates, key=lambda item: item[0]) if candidates else None
+        if rank <= 3:
+            anchor_x = _center(rank_box)[0]
+            id_candidate = min(
+                (
+                    (abs(_center(box)[0] - anchor_x), value)
+                    for value, box in ids
+                    if center_y < _center(box)[1] <= center_y + 180
+                    and abs(_center(box)[0] - anchor_x) <= 100
+                ),
+                default=None,
+            )
+        else:
+            id_candidate = min(
+                (
+                    (abs(_center(box)[1] - center_y), value)
+                    for value, box in ids
+                    if abs(_center(box)[1] - center_y) <= 70
+                ),
+                default=None,
+            )
+        rows[rank] = {
+            "contribution_gap": candidate[1] if candidate else None,
+            "user_id": id_candidate[1] if id_candidate else None,
+            "row_y": center_y,
+        }
+    return rows
+
+
 def _find_contribution_targets(
     hierarchy: str,
 ) -> tuple[list[tuple[int, tuple[int, int]]], list[tuple[int, int]]]:
@@ -445,6 +608,41 @@ def _was_scanned_on(value: Any, scan_day: str) -> bool:
     return str(value.get("scanned_at", ""))[:10] == scan_day
 
 
+def _normalize_setting_list(value: Any) -> set[str]:
+    if isinstance(value, str):
+        values = re.split(r"[\s,，;；]+", value)
+    elif isinstance(value, (list, tuple, set)):
+        values = [str(item) for item in value]
+    else:
+        return set()
+    return {item.strip() for item in values if item.strip()}
+
+
+def _normalize_gender_selection(value: Any) -> set[str]:
+    aliases = {"male": "男", "female": "女", "unknown": "未知"}
+    return {aliases.get(item.lower(), item) for item in _normalize_setting_list(value)}
+
+
+def _should_record_gender(gender: str, selected: set[str] | None) -> bool:
+    return not selected or gender in selected
+
+
+def _selected_record_genders(params: dict[str, Any]) -> set[str]:
+    flag_names = {
+        "record_gender_male": "男",
+        "record_gender_female": "女",
+        "record_gender_unknown": "未知",
+    }
+    if any(name in params for name in flag_names):
+        return {
+            gender
+            for name, gender in flag_names.items()
+            if bool(params.get(name, False))
+        }
+    selected = _normalize_gender_selection(params.get("record_genders"))
+    return selected or {"男", "女", "未知"}
+
+
 def _should_save_level_samples(project_root: Path = PROJECT_ROOT) -> bool:
     """Keep unrecognized-level screenshots in source runs, not releases."""
     is_packaged_release = (project_root / "interface.json").is_file() and (
@@ -513,6 +711,8 @@ class ContributionScanner(CustomAction):
         include_top3 = bool(params.get("include_top3", True))
         unknown_gender_as_male = bool(params.get("unknown_gender_as_male", False))
         single_hall = bool(params.get("single_hall", False))
+        skipped_room_ids = _normalize_setting_list(params.get("skip_room_ids"))
+        record_genders = _selected_record_genders(params)
         skip_scanned_today = bool(params.get("skip_scanned_today", False)) or (
             getattr(argv, "custom_action_name", "") == SKIP_SCANNED_CUSTOM_ACTION
         )
@@ -541,6 +741,8 @@ class ContributionScanner(CustomAction):
             getattr(controller, "resolution", "unknown"),
             f"扫描日期={scan_day}",
             f"每厅扫描上限={max_users_per_hall}",
+            f"跳过厅数={len(skipped_room_ids)}",
+            f"记录性别={','.join(sorted(record_genders))}",
             f"跳过今日已扫描厅={skip_scanned_today}",
         )
         self._check_stopping(context)
@@ -549,6 +751,9 @@ class ContributionScanner(CustomAction):
             room_id = _extract_hall_id(str(params.get("room_id", "")))
             if room_id is None:
                 self._log("单厅调试缺少有效厅 ID，请填写 4 到 8 位数字")
+                return False
+            if room_id in skipped_room_ids:
+                self._log(f"厅 {room_id} 在跳过列表中，单厅调试不进入")
                 return False
             room_name = str(params.get("room_name") or room_id).strip() or room_id
             _, items = self._capture_ocr(context)
@@ -579,6 +784,7 @@ class ContributionScanner(CustomAction):
                 max_users=max_users_per_hall,
                 include_top3=include_top3,
                 unknown_gender_as_male=unknown_gender_as_male,
+                record_genders=record_genders,
             )
             if opened:
                 self._log(f"单厅调试完成：厅 {room_id}，输出：{output_path}")
@@ -629,6 +835,9 @@ class ContributionScanner(CustomAction):
                 hall_id = str(candidate["hall_id"])
                 if hall_id in scanned_this_run:
                     continue
+                if hall_id in skipped_room_ids:
+                    self._log(f"厅 {hall_id} 在跳过列表中，未进入")
+                    continue
                 if skip_scanned_today and _was_scanned_on(
                     visited_halls.get(hall_id), scan_day
                 ):
@@ -651,8 +860,18 @@ class ContributionScanner(CustomAction):
 
                 if needs_first_hall_warmup:
                     self._log(
-                        f"厅 {hall_id} 是本次任务首个厅，等待房间页面完成初始化"
+                        f"厅 {hall_id} 是本次任务首个厅，先返回厅列表再重新进入"
                     )
+                    returned = self._return_to_hall_list(context, max_attempts=4)
+                    reentered = returned and self._open_hall(
+                        context,
+                        int(candidate["card_y"]),
+                        delay,
+                    )
+                    if not reentered:
+                        self._log(f"厅 {hall_id} 首厅重进失败，跳过")
+                        self._return_to_hall_list(context, max_attempts=2)
+                        continue
                     self._sleep(context, FIRST_HALL_WARMUP_SECONDS)
                     needs_first_hall_warmup = False
 
@@ -668,6 +887,7 @@ class ContributionScanner(CustomAction):
                     max_users=max_users_per_hall,
                     include_top3=include_top3,
                     unknown_gender_as_male=unknown_gender_as_male,
+                    record_genders=record_genders,
                 )
 
                 if not opened:
@@ -694,6 +914,7 @@ class ContributionScanner(CustomAction):
                             max_users=max_users_per_hall,
                             include_top3=include_top3,
                             unknown_gender_as_male=unknown_gender_as_male,
+                            record_genders=record_genders,
                         )
                     else:
                         self._log(f"厅 {hall_id} 未能重新进入，取消本次重试")
@@ -745,9 +966,32 @@ class ContributionScanner(CustomAction):
         max_users: int,
         include_top3: bool,
         unknown_gender_as_male: bool,
+        record_genders: set[str] | None = None,
     ) -> bool:
         self._log(f"厅 {room_id} 正在打开贡献榜")
         self._open_contribution_panel(context, delay)
+        rank_data, moved_from_top = self._collect_contribution_rank_data(
+            context=context,
+            room_id=room_id,
+            delay=delay,
+            max_pages=max_pages,
+            max_users=max_users,
+        )
+        _estimate_contribution_values(rank_data)
+        if rank_data:
+            last_rank = max(rank_data)
+            self._log(
+                f"厅 {room_id} 榜单预扫描完成：{len(rank_data)} 人，"
+                f"假设本次最后一名（第 {last_rank} 名）贡献值为 1"
+            )
+        if moved_from_top and not self._return_contribution_to_top(
+            context,
+            delay,
+            max_attempts=max_pages + 2,
+        ):
+            self._log(f"厅 {room_id} 贡献榜未能回到榜首，取消资料扫描")
+            return False
+
         seen_ranks: set[int] = set()
         page_fingerprints: set[tuple[int, ...]] = set()
 
@@ -788,6 +1032,15 @@ class ContributionScanner(CustomAction):
                         processed_users=processed_users,
                         delay=delay,
                         unknown_gender_as_male=unknown_gender_as_male,
+                        record_genders=record_genders,
+                        contribution_gap=rank_data.get(rank, {}).get(
+                            "contribution_gap"
+                        ),
+                        estimated_contribution_value=rank_data.get(rank, {}).get(
+                            "estimated_contribution_value"
+                        ),
+                        leaderboard_user_id=rank_data.get(rank, {}).get("user_id"),
+                        from_leaderboard=True,
                     )
                     if max_users and rank >= max_users:
                         self._log(f"厅 {room_id} 已完成贡献榜前 {max_users} 名的扫描")
@@ -830,6 +1083,15 @@ class ContributionScanner(CustomAction):
                     processed_users=processed_users,
                     delay=delay,
                     unknown_gender_as_male=unknown_gender_as_male,
+                    record_genders=record_genders,
+                    contribution_gap=rank_data.get(rank, {}).get(
+                        "contribution_gap"
+                    ),
+                    estimated_contribution_value=rank_data.get(rank, {}).get(
+                        "estimated_contribution_value"
+                    ),
+                    leaderboard_user_id=rank_data.get(rank, {}).get("user_id"),
+                    from_leaderboard=True,
                 )
                 if max_users and rank >= max_users:
                     self._log(f"厅 {room_id} 已完成贡献榜前 {max_users} 名的扫描")
@@ -844,6 +1106,77 @@ class ContributionScanner(CustomAction):
                 self._log(f"厅 {room_id} 贡献榜已到底或滑动未生效")
                 return True
         return True
+
+    def _collect_contribution_rank_data(
+        self,
+        context: Context,
+        room_id: str,
+        delay: float,
+        max_pages: int,
+        max_users: int,
+    ) -> tuple[dict[int, dict[str, Any]], bool]:
+        collected: dict[int, dict[str, Any]] = {}
+        page_fingerprints: set[tuple[int, ...]] = set()
+        moved_from_top = False
+        for page_index in range(max_pages):
+            self._check_stopping(context)
+            self._log(f"厅 {room_id} 正在预扫描榜单第 {page_index + 1} 页")
+            _, items = self._capture_ocr(context)
+            hierarchy = self._dump_ui_hierarchy()
+            if not (
+                self._is_contribution_panel(items)
+                or _is_contribution_hierarchy(hierarchy)
+            ):
+                break
+
+            page_data = _find_contribution_row_data(hierarchy)
+            for rank, data in page_data.items():
+                if max_users and rank > max_users:
+                    continue
+                target = collected.setdefault(rank, {})
+                for key, value in data.items():
+                    if value is not None or key not in target:
+                        target[key] = value
+
+            _, hierarchy_rows = _find_contribution_targets(hierarchy)
+            rank_rows = hierarchy_rows or self._find_rank_rows(items)
+            fingerprint = tuple(rank for rank, _ in rank_rows)
+            if not fingerprint or fingerprint in page_fingerprints:
+                break
+            page_fingerprints.add(fingerprint)
+            if max_users and max(fingerprint) >= max_users:
+                break
+            next_items = self._scroll_contribution(
+                context,
+                before_ranks=fingerprint,
+                delay=delay,
+            )
+            if next_items is None:
+                break
+            moved_from_top = True
+        return collected, moved_from_top
+
+    def _return_contribution_to_top(
+        self,
+        context: Context,
+        delay: float,
+        max_attempts: int,
+    ) -> bool:
+        for _ in range(max_attempts):
+            self._check_stopping(context)
+            hierarchy = self._dump_ui_hierarchy()
+            _, rows = _find_contribution_targets(hierarchy)
+            if any(rank == 4 for rank, _ in rows):
+                return True
+            self.controller.post_swipe(
+                CONTRIBUTION_SCROLL_X,
+                CONTRIBUTION_SCROLL_END_Y,
+                CONTRIBUTION_SCROLL_X,
+                CONTRIBUTION_SCROLL_START_Y,
+                700,
+            ).wait()
+            self._sleep(context, delay)
+        return False
 
     def _scroll_contribution(
         self,
@@ -887,6 +1220,11 @@ class ContributionScanner(CustomAction):
         processed_users: set[tuple[str, str]],
         delay: float,
         unknown_gender_as_male: bool,
+        record_genders: set[str] | None = None,
+        contribution_gap: int | None = None,
+        estimated_contribution_value: int | None = None,
+        leaderboard_user_id: str | None = None,
+        from_leaderboard: bool = False,
     ) -> bool:
         self._check_stopping(context)
         self.controller.post_click(click_point[0], click_point[1]).wait()
@@ -894,7 +1232,23 @@ class ContributionScanner(CustomAction):
 
         self._last_profile_hierarchy = ""
         profile_image, profile_items = self._wait_for_profile_page(context)
-        user_id = self._copy_profile_id(context)
+        profile_hierarchy = self._dump_ui_hierarchy()
+        if profile_hierarchy.find("<?xml") >= 0:
+            self._last_profile_hierarchy = profile_hierarchy
+
+        initial_gender = self._extract_gender(
+            profile_image,
+            profile_items,
+            self._last_profile_hierarchy,
+            unknown_gender_as_male=False,
+        )[0]
+        if not _should_record_gender(initial_gender, record_genders):
+            self.controller.post_click_key(4).wait()
+            self._sleep(context, delay * 0.6)
+            self._log(f"排名 {rank} 用户性别={initial_gender} 不在记录性别中，立即跳过")
+            return True
+
+        user_id = leaderboard_user_id or self._copy_profile_id(context)
 
         # Some leaderboard users do not expose a profile even though Android
         # reports their avatar as clickable. Wait for slow transitions before
@@ -914,7 +1268,7 @@ class ContributionScanner(CustomAction):
         if not profile_items:
             profile_image, profile_items = self._capture_ocr(context)
 
-        if not user_id:
+        if not user_id and not from_leaderboard:
             user_id = self._extract_profile_id(profile_items)
             if user_id:
                 self._log(f"排名 {rank} 的 ID 使用 OCR 兜底：{user_id}")
@@ -956,6 +1310,11 @@ class ContributionScanner(CustomAction):
             unknown_gender_as_male,
         )
         self._last_profile_hierarchy = profile_hierarchy
+        if not _should_record_gender(gender, record_genders):
+            self.controller.post_click_key(4).wait()
+            self._sleep(context, delay * 0.6)
+            self._log(f"排名 {rank} 用户性别={gender} 不在记录性别中，不记录")
+            return True
         close_friend_count = self._scan_close_friend_count(
             context,
             profile_items,
@@ -997,6 +1356,8 @@ class ContributionScanner(CustomAction):
             "wealth_level": wealth_level,
             "charm_level": charm_level,
             "rank": rank,
+            "contribution_gap": contribution_gap,
+            "estimated_contribution_value": estimated_contribution_value,
             "scanned_at": scanned_at,
         }
         missing_level_fields = [
