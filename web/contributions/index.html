@@ -16,7 +16,7 @@
                 <p class="subtitle">从本机 SQLite 实时读取，数据不会上传。</p>
             </div>
             <div class="hero-actions">
-                <button id="open-export" class="secondary" type="button">导出 CSV</button>
+                <button id="open-export" class="secondary" type="button">导出</button>
                 <button id="open-settings" class="secondary" type="button">隐藏名单设置</button>
             </div>
         </header>
@@ -170,12 +170,12 @@
             <form method="dialog" class="dialog-card">
                 <div class="dialog-title">
                     <div>
-                        <p class="eyebrow">FILTERED CSV EXPORT</p>
-                        <h2>选择导出列</h2>
+                        <p class="eyebrow">FILTERED DATA EXPORT</p>
+                        <h2>导出贡献记录</h2>
                     </div>
                     <button class="icon-button" value="cancel" aria-label="关闭">×</button>
                 </div>
-                <p class="dialog-help">将按页面当前筛选条件导出全部匹配记录，不受当前分页限制。</p>
+                <p class="dialog-help">按当前筛选条件导出全部匹配记录。静态 HTML 与当前页面格式一致、不分页，并默认以元显示金额。</p>
                 <div class="column-tools">
                     <button id="select-all-columns" class="text-button" type="button">全选</button>
                     <button id="clear-all-columns" class="text-button" type="button">清空</button>
@@ -205,6 +205,7 @@
                 <p id="export-status" class="dialog-status"></p>
                 <div class="dialog-actions">
                     <button class="secondary" value="cancel">取消</button>
+                    <button id="start-html-export" class="secondary" type="button">导出静态 HTML</button>
                     <button id="start-export" class="primary" type="button">导出 CSV</button>
                 </div>
             </form>

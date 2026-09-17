@@ -23,6 +23,7 @@ from contribution_viewer import (  # noqa: E402
     ContributionViewerServer,
     HEALTH_RESPONSE,
     export_records_csv,
+    export_records_html,
     is_server_running,
     load_settings,
     parse_export_columns,
@@ -269,6 +270,65 @@ class ContributionViewerTest(unittest.TestCase):
         self.assertEqual(columns, ["user_id", "username"])
         with self.assertRaisesRegex(ValueError, "至少选择"):
             parse_export_columns({"columns": ["not-a-column"]})
+
+    def test_html_export_is_unpaginated_uses_yuan_and_escapes_data(self) -> None:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            connection.execute(
+                "UPDATE contributions SET username = ? WHERE user_id = ?",
+                ("<script>alert(1)</script>", "u1"),
+            )
+        query = RecordQuery.from_query(
+            {
+                "date_mode": ["recent"],
+                "days": ["2"],
+                "page": ["2"],
+                "page_size": ["10"],
+            },
+            today=date(2026, 9, 14),
+        )
+
+        document = export_records_html(
+            self.database_path,
+            self.settings_path,
+            query,
+        ).decode("utf-8")
+
+        self.assertIn("<strong>2</strong>", document)
+        self.assertIn("距前一名金额", document)
+        self.assertIn("推测金额", document)
+        self.assertIn("25 元", document)
+        self.assertIn("150 元", document)
+        self.assertIn("ID u2", document)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", document)
+        self.assertNotIn("<script>", document)
+        self.assertNotIn("上一页", document)
+
+    def test_html_export_endpoint_downloads_a_standalone_file(self) -> None:
+        web_root = self.root / "html-export-web"
+        web_root.mkdir()
+        web_root.joinpath("index.html").write_text("viewer", encoding="utf-8")
+        server = ContributionViewerServer(
+            ("127.0.0.1", 0),
+            self.database_path,
+            self.settings_path,
+            web_root,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        url = (
+            f"http://127.0.0.1:{server.server_port}/api/export.html"
+            "?date_mode=custom&start_date=2026-09-14&end_date=2026-09-14"
+        )
+        try:
+            with urlopen(url, timeout=2) as response:  # noqa: S310
+                self.assertEqual(response.status, HTTPStatus.OK)
+                self.assertEqual(response.headers.get_content_type(), "text/html")
+                self.assertIn(".html", response.headers["Content-Disposition"])
+                self.assertIn("贡献记录", response.read().decode("utf-8"))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
 
     def test_health_endpoint_identifies_the_viewer(self) -> None:
         web_root = self.root / "web"

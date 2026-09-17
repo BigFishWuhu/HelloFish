@@ -1,5 +1,6 @@
 import argparse
 import csv
+import html
 import io
 import json
 import os
@@ -350,12 +351,11 @@ def _export_value(record: sqlite3.Row, column: str) -> Any:
     return value
 
 
-def export_records_csv(
+def _query_export_records(
     database_path: Path,
     settings_path: Path,
     record_query: RecordQuery,
-    columns: list[str],
-) -> bytes:
+) -> list[sqlite3.Row]:
     where_sql, parameters, order_by = _build_record_filter(settings_path, record_query)
     with closing(sqlite3.connect(database_path, timeout=10)) as connection:
         connection.row_factory = sqlite3.Row
@@ -376,6 +376,16 @@ def export_records_csv(
             """,
             parameters,
         ).fetchall()
+    return rows
+
+
+def export_records_csv(
+    database_path: Path,
+    settings_path: Path,
+    record_query: RecordQuery,
+    columns: list[str],
+) -> bytes:
+    rows = _query_export_records(database_path, settings_path, record_query)
 
     output = io.StringIO(newline="")
     writer = csv.writer(output)
@@ -383,6 +393,142 @@ def export_records_csv(
     for record in rows:
         writer.writerow(_export_value(record, column) for column in columns)
     return b"\xef\xbb\xbf" + output.getvalue().encode("utf-8")
+
+
+STATIC_EXPORT_CSS = """
+:root { font-family: Inter, "Microsoft YaHei", "PingFang SC", system-ui, sans-serif; color: #17343b; background: #f4f8f7; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; }
+.hero { padding: 42px clamp(20px, 5vw, 72px) 34px; color: white; background: linear-gradient(120deg, #123b43 0%, #176c70 62%, #238f86 100%); }
+.eyebrow { margin: 0 0 8px; color: #8de6d5; font-size: 12px; font-weight: 800; letter-spacing: .18em; }
+h1 { margin: 0; font-size: 46px; line-height: 1; letter-spacing: 0; }
+.subtitle { margin: 14px 0 0; color: #d5efeb; }
+main { padding: 26px clamp(14px, 4vw, 56px) 48px; }
+.summary { display: flex; align-items: center; flex-wrap: wrap; gap: 24px; padding: 0 4px 18px; }
+.summary div { display: grid; min-width: 130px; }
+.summary strong { font-size: 20px; }
+.summary span { color: #71888c; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+.summary time { margin-left: auto; color: #71888c; font-size: 12px; }
+.panel { overflow: hidden; border: 1px solid #dce8e5; border-radius: 8px; background: white; box-shadow: 0 12px 38px rgba(17, 72, 76, .08); }
+.table-scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; white-space: nowrap; }
+th { padding: 13px 14px; color: #60797d; background: #eef5f3; font-size: 11px; text-align: left; letter-spacing: .04em; }
+td { padding: 13px 14px; border-top: 1px solid #e7efed; font-size: 13px; }
+tbody tr:nth-child(even) { background: #fbfdfd; }
+.identity { display: grid; gap: 2px; font-weight: 700; }
+.identity small { color: #819497; font-size: 10px; font-weight: 500; }
+.wealth { color: #b27514; font-weight: 900; }
+.empty { padding: 58px 20px; color: #829699; text-align: center; }
+.footnote { color: #71888c; font-size: 12px; text-align: right; }
+@media (max-width: 720px) { h1 { font-size: 36px; } .summary time { width: 100%; margin-left: 0; } }
+@media print { :root { background: white; } .hero { print-color-adjust: exact; } main { padding: 18px 0; } .panel { border-radius: 0; box-shadow: none; } }
+""".strip()
+
+
+def _html_text(value: Any, fallback: str = "—") -> str:
+    if value is None or value == "":
+        return fallback
+    return html.escape(str(value), quote=True)
+
+
+def _format_html_scan_time(value: Any) -> str:
+    if value is None or value == "":
+        return "—"
+    text = str(value)
+    if len(text) >= 19 and text[4:5] == "-" and text[10:11] in {"T", " "}:
+        text = text[:19].replace("T", " ")
+    return html.escape(text, quote=True)
+
+
+def _format_html_yuan(contribution: Any) -> str:
+    if contribution is None:
+        return "???"
+    return html.escape(_format_yuan_amount(float(contribution) / 10).replace("元", " 元"))
+
+
+def export_records_html(
+    database_path: Path,
+    settings_path: Path,
+    record_query: RecordQuery,
+) -> bytes:
+    rows = _query_export_records(database_path, settings_path, record_query)
+    table_rows: list[str] = []
+    for record in rows:
+        room = (
+            f'<div class="identity">{_html_text(record["room_name"])}'
+            f'<small>ID {_html_text(record["room_id"])}</small></div>'
+        )
+        user = (
+            f'<div class="identity">{_html_text(record["username"])}'
+            f'<small>ID {_html_text(record["user_id"])}</small></div>'
+        )
+        cells = (
+            _format_html_scan_time(record["scanned_at"]),
+            room,
+            _html_text(record["rank"]),
+            _format_html_yuan(record["contribution_gap"]),
+            _format_html_yuan(record["estimated_contribution_value"]),
+            user,
+            _html_text(record["gender"]),
+            _html_text(record["ip"]),
+            _html_text(record["close_friend_count"]),
+            _html_text(record["wealth_level"], "???"),
+            _format_html_yuan(record["wealth_min_contribution"]),
+            _html_text(record["charm_level"]),
+        )
+        table_rows.append(
+            "<tr>"
+            + "".join(
+                f'<td class="wealth">{value}</td>' if index == 9 else f"<td>{value}</td>"
+                for index, value in enumerate(cells)
+            )
+            + "</tr>"
+        )
+
+    date_summary = (
+        record_query.start_date.isoformat()
+        if record_query.start_date == record_query.end_date
+        else f"{record_query.start_date.isoformat()} — {record_query.end_date.isoformat()}"
+    )
+    exported_at = datetime.now(timezone.utc).astimezone(CHINA_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    table_content = "".join(table_rows)
+    empty = "" if table_rows else '<div class="empty">当前条件下没有贡献记录</div>'
+    document = f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'" />
+<title>HelloFish 贡献记录 {date_summary}</title>
+<style>{STATIC_EXPORT_CSS}</style>
+</head>
+<body>
+<header class="hero">
+<p class="eyebrow">HELLOFISH DATA EXPORT</p>
+<h1>贡献记录</h1>
+<p class="subtitle">静态导出 · 金额按元显示 · 全部匹配记录</p>
+</header>
+<main>
+<section class="summary">
+<div><strong>{len(rows)}</strong><span>条记录</span></div>
+<div><strong>{date_summary}</strong><span>数据范围</span></div>
+<time>导出于 {exported_at}</time>
+</section>
+<section class="panel">
+<div class="table-scroll">
+<table>
+<thead><tr><th>日期 / 时间</th><th>厅</th><th>排名</th><th>距前一名金额</th><th>推测金额</th><th>用户</th><th>性别</th><th>IP 属地</th><th>挚友</th><th>财富等级</th><th>等级最低金额</th><th>魅力等级</th></tr></thead>
+<tbody>{table_content}</tbody>
+</table>
+{empty}
+</div>
+</section>
+<p class="footnote">金额按 10 贡献值 = 1 元换算。推测值以本次扫描最后一名为 1；缺失处按后续已知差值平均补算，第 1–3 名取相同值。</p>
+</main>
+</body>
+</html>
+"""
+    return document.encode("utf-8")
 
 
 class ContributionViewerServer(ThreadingHTTPServer):
@@ -416,6 +562,7 @@ class ContributionViewerHandler(BaseHTTPRequestHandler):
         *,
         cache: bool = False,
         headers: dict[str, str] | None = None,
+        content_security_policy: str | None = None,
     ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -424,8 +571,11 @@ class ContributionViewerHandler(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'self'; script-src 'self'; style-src 'self'; "
-            "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'",
+            content_security_policy
+            or (
+                "default-src 'self'; script-src 'self'; style-src 'self'; "
+                "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"
+            ),
         )
         self.send_header("Cache-Control", "public, max-age=300" if cache else "no-store")
         for name, value in (headers or {}).items():
@@ -484,6 +634,26 @@ class ContributionViewerHandler(BaseHTTPRequestHandler):
                     payload,
                     "text/csv; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+                )
+                return
+            if parsed.path == "/api/export.html":
+                raw_query = parse_qs(parsed.query, keep_blank_values=True)
+                query = RecordQuery.from_query(raw_query)
+                payload = export_records_html(
+                    self.server.database_path,
+                    self.server.settings_path,
+                    query,
+                )
+                filename = f"HelloFish-contributions-{query.start_date}-{query.end_date}.html"
+                self._send_bytes(
+                    HTTPStatus.OK,
+                    payload,
+                    "text/html; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+                    content_security_policy=(
+                        "default-src 'none'; style-src 'unsafe-inline'; img-src data:; "
+                        "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+                    ),
                 )
                 return
             static_files = {

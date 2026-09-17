@@ -259,6 +259,21 @@ function startExport() {
     showToast(`正在导出 ${columns.length} 列，筛选条件已保留`);
 }
 
+function startHtmlExport() {
+    persistFilters();
+    const params = new URLSearchParams(queryParams());
+    params.delete("page");
+    params.delete("page_size");
+    const download = document.createElement("a");
+    download.href = `/api/export.html?${params.toString()}`;
+    download.hidden = true;
+    document.body.append(download);
+    download.click();
+    download.remove();
+    $("#export-dialog").close();
+    showToast("正在导出静态 HTML，筛选条件已保留");
+}
+
 async function loadRecords() {
     persistFilters();
     $("#status").textContent = "正在读取本地数据…";
@@ -373,6 +388,7 @@ $("#open-settings").addEventListener("click", openSettings);
 $("#save-settings").addEventListener("click", saveSettings);
 $("#open-export").addEventListener("click", openExport);
 $("#start-export").addEventListener("click", startExport);
+$("#start-html-export").addEventListener("click", startHtmlExport);
 $("#select-all-columns").addEventListener("click", () => {
     exportColumnControls().forEach((control) => (control.checked = true));
 });

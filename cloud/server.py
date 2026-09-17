@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agent"))
 from contribution_viewer import (  # noqa: E402
     RecordQuery,
     export_records_csv,
+    export_records_html,
     load_settings,
     parse_export_columns,
     query_records,
@@ -365,6 +366,23 @@ class CloudHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "text/csv; charset=utf-8")
                 self.send_header("Content-Length", str(len(payload)))
                 self.send_header("Content-Disposition", 'attachment; filename="HelloFish-contributions.csv"')
+                self.end_headers(); self.wfile.write(payload)
+                return
+            if path == "/api/export.html":
+                query = RecordQuery.from_query(raw)
+                payload = export_records_html(database_path, settings_path, query)
+                filename = f"HelloFish-contributions-{query.start_date}-{query.end_date}.html"
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(payload)))
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header(
+                    "Content-Security-Policy",
+                    "default-src 'none'; style-src 'unsafe-inline'; img-src data:; "
+                    "base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+                )
+                self.send_header("Cache-Control", "no-store")
                 self.end_headers(); self.wfile.write(payload)
                 return
             self._error(HTTPStatus.NOT_FOUND, "页面不存在")

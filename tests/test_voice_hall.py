@@ -1146,6 +1146,72 @@ class HallListRecognitionTest(unittest.TestCase):
         self.assertIs(result, next_page)
         self.assertEqual(controller.swipes, [(650, 1040, 650, 650, 700)])
 
+    def test_prescan_reset_returns_to_room_and_reopens_contribution(self) -> None:
+        controller = FakeController()
+        self.scanner.controller = controller
+        context = SimpleNamespace()
+        room_items = [
+            ocr("公告", (48, 141, 55, 25)),
+            ocr("聊聊天", (33, 1201, 79, 33)),
+        ]
+        contribution_items = [ocr("房间贡献榜", (330, 55, 150, 35))]
+
+        with (
+            patch.object(
+                self.scanner,
+                "_capture_ocr",
+                side_effect=[
+                    (None, room_items),
+                    (None, contribution_items),
+                ],
+            ),
+            patch.object(self.scanner, "_open_contribution_panel") as reopen,
+            patch.object(self.scanner, "_sleep"),
+            patch.object(self.scanner, "_log"),
+        ):
+            reset = self.scanner._reset_contribution_panel_after_prescan(
+                context,
+                room_id="51795",
+                delay=0.1,
+            )
+
+        self.assertTrue(reset)
+        self.assertEqual(controller.clicks, [("key", 4)])
+        reopen.assert_called_once_with(context, 0.1)
+
+    def test_contribution_scan_resets_panel_after_prescan_scroll(self) -> None:
+        context = SimpleNamespace()
+        with (
+            patch.object(self.scanner, "_open_contribution_panel"),
+            patch.object(
+                self.scanner,
+                "_collect_contribution_rank_data",
+                return_value=({4: {"user_id": "71110"}}, True),
+            ),
+            patch.object(
+                self.scanner,
+                "_reset_contribution_panel_after_prescan",
+                return_value=False,
+            ) as reset,
+            patch.object(self.scanner, "_log"),
+        ):
+            scanned = self.scanner._scan_contribution(
+                context=context,
+                room_id="51795",
+                room_name="测试厅",
+                output_path=Path("unused.sqlite3"),
+                records=[],
+                processed_users=set(),
+                delay=0.1,
+                max_pages=100,
+                max_users=100,
+                include_top3=True,
+                unknown_gender_as_male=False,
+            )
+
+        self.assertFalse(scanned)
+        reset.assert_called_once_with(context, "51795", 0.1)
+
     def test_record_user_does_not_treat_leaderboard_as_profile(self) -> None:
         controller = FakeController()
         self.scanner.controller = controller

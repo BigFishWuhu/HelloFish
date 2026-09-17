@@ -990,12 +990,12 @@ class ContributionScanner(CustomAction):
                 f"厅 {room_id} 榜单预扫描完成：{len(rank_data)} 人，"
                 f"假设本次最后一名（第 {last_rank} 名）贡献值为 1"
             )
-        if moved_from_top and not self._return_contribution_to_top(
+        if moved_from_top and not self._reset_contribution_panel_after_prescan(
             context,
+            room_id,
             delay,
-            max_attempts=max_pages + 2,
         ):
-            self._log(f"厅 {room_id} 贡献榜未能回到榜首，取消资料扫描")
+            self._log(f"厅 {room_id} 贡献榜未能重置到第一页，取消资料扫描")
             return False
 
         seen_ranks: set[int] = set()
@@ -1162,26 +1162,35 @@ class ContributionScanner(CustomAction):
             moved_from_top = True
         return collected, moved_from_top
 
-    def _return_contribution_to_top(
+    def _reset_contribution_panel_after_prescan(
         self,
         context: Context,
+        room_id: str,
         delay: float,
-        max_attempts: int,
     ) -> bool:
-        for _ in range(max_attempts):
+        self._log(f"厅 {room_id} 预扫描完成，返回厅内并重新打开贡献榜")
+        self.controller.post_click_key(4).wait()
+        self._sleep(context, max(delay, 0.7))
+
+        for attempt in range(3):
             self._check_stopping(context)
-            hierarchy = self._dump_ui_hierarchy()
-            _, rows = _find_contribution_targets(hierarchy)
-            if any(rank == 4 for rank, _ in rows):
-                return True
-            self.controller.post_swipe(
-                CONTRIBUTION_SCROLL_X,
-                CONTRIBUTION_SCROLL_END_Y,
-                CONTRIBUTION_SCROLL_X,
-                CONTRIBUTION_SCROLL_START_Y,
-                700,
-            ).wait()
-            self._sleep(context, delay)
+            _, items = self._capture_ocr(context)
+            if self._is_room_page(items):
+                break
+            if self._is_contribution_panel(items) and attempt < 2:
+                self.controller.post_click_key(4).wait()
+            self._sleep(context, max(delay, 0.7))
+        else:
+            self._log(f"厅 {room_id} 预扫描后未能返回厅内")
+            return False
+
+        self._open_contribution_panel(context, delay)
+        _, items = self._capture_ocr(context)
+        if self._is_contribution_panel(items):
+            return True
+        if _is_contribution_hierarchy(self._dump_ui_hierarchy()):
+            return True
+        self._log(f"厅 {room_id} 预扫描后重新打开贡献榜失败")
         return False
 
     def _scroll_contribution(

@@ -63,6 +63,19 @@ class CloudServiceTest(unittest.TestCase):
         self.assertEqual(json.loads(body)["saved"], 1)
         self.assertEqual(self.call("/api/records", headers=headers)[0], 200)
 
+    def test_authenticated_user_can_export_static_html(self) -> None:
+        credentials = base64.b64encode(b"alice:secret").decode("ascii")
+        headers = {"Authorization": f"Basic {credentials}"}
+        status, response_headers, body = self.call(
+            "/api/export.html?date_mode=custom&start_date=2026-09-14&end_date=2026-09-14",
+            headers=headers,
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(response_headers.get_content_type(), "text/html")
+        self.assertIn(".html", response_headers["Content-Disposition"])
+        self.assertIn("贡献记录", body.decode("utf-8"))
+
     def test_first_user_setup_is_one_time(self) -> None:
         self.server.users.clear()
         token = self.server.setup_first_user("first-user", "secret-1")
