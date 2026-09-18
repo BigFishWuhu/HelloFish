@@ -20,7 +20,7 @@ const state = {page: 1, pageSize: 50, total: 0, records: []};
 const storageKey = "hellofish-contribution-filters-v1";
 const exportStorageKey = "hellofish-contribution-export-columns-v1";
 const copiedUserStorageKey = "hellofish-copied-user-ids-v1";
-const copiedUserTtlMs = 24 * 60 * 60 * 1000;
+const copiedUserTtlMs = 12 * 60 * 60 * 1000;
 const copiedUsers = new Map();
 let toastTimer;
 

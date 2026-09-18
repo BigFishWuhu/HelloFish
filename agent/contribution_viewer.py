@@ -449,7 +449,7 @@ tbody tr:nth-child(even) { background: #fbfdfd; }
 STATIC_EXPORT_JS = """
 const toast = document.querySelector("#toast");
 const copiedUserStorageKey = "hellofish-copied-user-ids-v1";
-const copiedUserTtlMs = 24 * 60 * 60 * 1000;
+const copiedUserTtlMs = 12 * 60 * 60 * 1000;
 const copiedUsers = new Map();
 let toastTimer;
 
