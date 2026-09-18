@@ -430,8 +430,9 @@ tbody tr:nth-child(even) { background: #fbfdfd; }
 .identity small { color: #819497; font-size: 10px; font-weight: 500; }
 .user-copy { width: 100%; border: 0; padding: 0; color: inherit; background: none; font: inherit; text-align: left; cursor: pointer; }
 .user-copy:hover { color: #176c70; }
-.user-copy.copied-user, .user-copy.copied-user:hover { color: #9aa9ac; }
-.user-copy.copied-user small { color: #aab7b9; }
+.user-copy.copied-user, .user-copy.copied-user:hover { color: #728286; opacity: .72; text-decoration: line-through; text-decoration-color: #aebbbc; text-decoration-thickness: 1px; font-weight: 600; }
+.user-copy.copied-user small { color: #8e9ea1; text-decoration: none; }
+.user-copy.copied-user small::after { display: inline-block; margin-left: 5px; border: 1px solid #b8c4c3; border-radius: 3px; padding: 1px 4px; color: #5f7274; background: #e9eeec; content: "已复制"; font-size: 9px; font-weight: 800; line-height: 1.2; text-decoration: none; }
 .user-copy:focus-visible { border-radius: 4px; outline: 2px solid #238f86; outline-offset: 3px; }
 .wealth { color: #b27514; font-weight: 900; }
 .wealth small { margin-left: 3px; color: #8f7a54; font-size: 11px; font-weight: 600; }
