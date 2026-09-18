@@ -320,6 +320,7 @@ class ContributionViewerTest(unittest.TestCase):
         self.assertIn("navigator.clipboard.writeText(userId)", document)
         self.assertIn("hellofish-copied-user-ids-v1", document)
         self.assertIn('content: "已复制"', document)
+        self.assertIn("position: absolute", document)
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", document)
         self.assertNotIn("<script>alert(1)</script>", document)
         self.assertNotIn("上一页", document)

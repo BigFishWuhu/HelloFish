@@ -251,6 +251,9 @@ tbody tr:hover {
     display: grid;
     width: 100%;
     gap: 2px;
+    position: relative;
+    box-sizing: border-box;
+    padding-right: 42px;
 }
 .user-copy > span {
     overflow: hidden;
@@ -274,8 +277,9 @@ tbody tr:hover {
     text-decoration: none;
 }
 .user-copy.copied-user .copy-secondary::after {
-    display: inline-block;
-    margin-left: 5px;
+    position: absolute;
+    right: 0;
+    bottom: 0;
     border: 1px solid #b8c4c3;
     border-radius: 3px;
     padding: 1px 4px;
@@ -284,7 +288,7 @@ tbody tr:hover {
     content: "已复制";
     font-size: 9px;
     font-weight: 800;
-    line-height: 1.2;
+    line-height: 12px;
     text-decoration: none;
 }
 .copy-primary {
