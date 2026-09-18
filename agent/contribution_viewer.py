@@ -533,18 +533,13 @@ function rowMatches(row) {
     const gender = fieldValue("gender");
     if (gender !== "all" && row.dataset.gender !== gender) return false;
 
+    const wealth = row.dataset.wealth === "" ? null : Number(row.dataset.wealth);
+    if (wealth === null && !filterForm.elements.include_unknown.checked) return false;
     const minimumWealth = fieldValue("min_wealth");
-    if (minimumWealth) {
-        const wealth = row.dataset.wealth === "" ? null : Number(row.dataset.wealth);
-        if (wealth === null) {
-            if (!filterForm.elements.include_unknown.checked) return false;
-        } else if (wealth <= Number(minimumWealth)) {
-            return false;
-        }
-    }
+    if (minimumWealth && wealth !== null && wealth <= Number(minimumWealth)) return false;
 
     const minimumFriends = fieldValue("min_friends");
-    if (minimumFriends && Number(row.dataset.friends || 0) < Number(minimumFriends)) return false;
+    if (minimumFriends && (row.dataset.friends === "" || Number(row.dataset.friends) < Number(minimumFriends))) return false;
     if (fieldValue("room_id") && row.dataset.roomId !== fieldValue("room_id")) return false;
     if (fieldValue("user_id") && row.dataset.userId !== fieldValue("user_id")) return false;
     const username = fieldValue("username").toLocaleLowerCase();
@@ -567,6 +562,8 @@ filterForm.addEventListener("submit", (event) => {
     applyFilters();
 });
 filterForm.addEventListener("reset", () => setTimeout(applyFilters));
+filterForm.addEventListener("input", applyFilters);
+filterForm.addEventListener("change", applyFilters);
 
 restoreCopiedUsers();
 document.querySelectorAll("[data-user-id]").forEach((button) => {
