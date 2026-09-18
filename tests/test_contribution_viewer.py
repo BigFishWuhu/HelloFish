@@ -302,6 +302,7 @@ class ContributionViewerTest(unittest.TestCase):
         self.assertNotIn("<th>等级最低金额</th>", document)
         self.assertIn("ID u2", document)
         self.assertIn('data-user-id="u2"', document)
+        self.assertIn('<tbody id="records-body">', document)
         self.assertIn('id="static-filters"', document)
         self.assertIn('name="gender"', document)
         self.assertIn('data-gender="male"', document)

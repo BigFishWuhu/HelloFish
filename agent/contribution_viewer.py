@@ -707,7 +707,7 @@ def export_records_html(
 <div class="table-scroll">
 <table>
 <thead><tr><th>日期 / 时间</th><th>厅</th><th>排名</th><th>距前一名金额</th><th>推测金额</th><th>用户</th><th>性别</th><th>IP 属地</th><th>挚友</th><th>财富等级</th><th>魅力等级</th></tr></thead>
-<tbody>{table_content}</tbody>
+<tbody id="records-body">{table_content}</tbody>
 </table>
 <div id="empty-state" class="empty{' hidden' if table_rows else ''}">当前条件下没有贡献记录</div>
 </div>
