@@ -25,8 +25,14 @@ const copiedUsers = new Map();
 let toastTimer;
 
 function localIsoDate(value = new Date()) {
-    const offset = value.getTimezoneOffset() * 60_000;
-    return new Date(value.getTime() - offset).toISOString().slice(0, 10);
+    const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: "Asia/Shanghai",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+    }).formatToParts(value);
+    const values = Object.fromEntries(parts.map(({type, value: part}) => [type, part]));
+    return `${values.year}-${values.month}-${values.day}`;
 }
 
 function restoreCopiedUsers() {

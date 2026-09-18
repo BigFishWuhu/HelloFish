@@ -119,6 +119,11 @@ class ContributionViewerTest(unittest.TestCase):
         self.assertEqual(result["records"][0]["estimated_contribution_value"], 1_500)
         self.assertIsNotNone(result["records"][0]["wealth_min_contribution"])
 
+    def test_cloud_page_uses_china_timezone_for_default_date(self) -> None:
+        app_path = Path(__file__).resolve().parents[1] / "cloud" / "web" / "contributions" / "app.js"
+        app = app_path.read_text(encoding="utf-8")
+        self.assertIn('timeZone: "Asia/Shanghai"', app)
+
     def test_default_today_uses_china_time_when_host_is_still_in_utc_yesterday(self) -> None:
         with patch.object(
             contribution_viewer,
