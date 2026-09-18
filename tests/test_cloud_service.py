@@ -63,6 +63,12 @@ class CloudServiceTest(unittest.TestCase):
         self.assertEqual(json.loads(body)["saved"], 1)
         self.assertEqual(self.call("/api/records", headers=headers)[0], 200)
 
+    def test_static_assets_disable_caching_and_version_the_app_script(self) -> None:
+        status, headers, body = self.call("/")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Cache-Control"], "no-store, no-cache, must-revalidate, max-age=0")
+        self.assertIn(b"/app.js?v=", body)
+
     def test_authenticated_user_can_export_static_html(self) -> None:
         credentials = base64.b64encode(b"alice:secret").decode("ascii")
         headers = {"Authorization": f"Basic {credentials}"}

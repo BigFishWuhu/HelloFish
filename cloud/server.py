@@ -344,7 +344,10 @@ class CloudHandler(BaseHTTPRequestHandler):
             payload = (self.server.web_root / static).read_bytes()
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8", "styles.css": "text/css; charset=utf-8"}[static])
-            self.send_header("Content-Length", str(len(payload))); self.end_headers(); self.wfile.write(payload); return
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+            self.send_header("Pragma", "no-cache")
+            self.end_headers(); self.wfile.write(payload); return
         username = self._auth()
         if username is None:
             return
