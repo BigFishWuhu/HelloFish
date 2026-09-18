@@ -259,11 +259,33 @@ tbody tr:hover {
 }
 .user-copy.copied-user,
 .copy-value.copied-user:not(:disabled):hover {
-    color: #9aa9ac;
-    text-decoration: none;
+    color: #728286;
+    opacity: 0.72;
+    text-decoration: line-through;
+    text-decoration-color: #aebbbc;
+    text-decoration-thickness: 1px;
+}
+.user-copy.copied-user .copy-primary {
+    color: #728286;
+    font-weight: 600;
 }
 .user-copy.copied-user .copy-secondary {
-    color: #aab7b9;
+    color: #8e9ea1;
+    text-decoration: none;
+}
+.user-copy.copied-user .copy-secondary::after {
+    display: inline-block;
+    margin-left: 5px;
+    border: 1px solid #b8c4c3;
+    border-radius: 3px;
+    padding: 1px 4px;
+    color: #5f7274;
+    background: #e9eeec;
+    content: "已复制";
+    font-size: 9px;
+    font-weight: 800;
+    line-height: 1.2;
+    text-decoration: none;
 }
 .copy-primary {
     font-weight: 700;

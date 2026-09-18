@@ -67,6 +67,7 @@ class CloudServiceTest(unittest.TestCase):
         status, headers, body = self.call("/")
         self.assertEqual(status, 200)
         self.assertEqual(headers["Cache-Control"], "no-store, no-cache, must-revalidate, max-age=0")
+        self.assertIn(b"/styles.css?v=", body)
         self.assertIn(b"/app.js?v=", body)
 
     def test_authenticated_user_can_export_static_html(self) -> None:
