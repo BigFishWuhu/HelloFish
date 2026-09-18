@@ -410,6 +410,17 @@ main { padding: 26px clamp(14px, 4vw, 56px) 48px; }
 .summary span { color: #71888c; font-size: 11px; font-weight: 700; text-transform: uppercase; }
 .summary time { margin-left: auto; color: #71888c; font-size: 12px; }
 .panel { overflow: hidden; border: 1px solid #dce8e5; border-radius: 8px; background: white; box-shadow: 0 12px 38px rgba(17, 72, 76, .08); }
+.filters { display: flex; flex-wrap: wrap; align-items: end; gap: 14px; padding: 18px; margin-bottom: 18px; }
+.field { display: grid; gap: 7px; min-width: 130px; }
+.field.wide { flex: 1 1 180px; }
+.field label, .check-field { color: #536d72; font-size: 12px; font-weight: 700; }
+input, select { width: 100%; border: 1px solid #cddedb; border-radius: 8px; padding: 9px 10px; color: #17343b; background: #fbfdfd; font: inherit; }
+.check-field { display: flex; align-items: center; gap: 7px; padding-bottom: 8px; }
+.check-field input { width: 16px; height: 16px; accent-color: #16877f; }
+.filter-actions { display: flex; gap: 8px; }
+.primary, .secondary { border: 0; border-radius: 8px; padding: 10px 15px; font-weight: 800; cursor: pointer; font: inherit; }
+.primary { color: white; background: #177f79; }
+.secondary { color: #175b5c; background: #e7f2ef; }
 .table-scroll { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; white-space: nowrap; }
 th { padding: 13px 14px; color: #60797d; background: #eef5f3; font-size: 11px; text-align: left; letter-spacing: .04em; }
@@ -419,9 +430,13 @@ tbody tr:nth-child(even) { background: #fbfdfd; }
 .identity small { color: #819497; font-size: 10px; font-weight: 500; }
 .user-copy { width: 100%; border: 0; padding: 0; color: inherit; background: none; font: inherit; text-align: left; cursor: pointer; }
 .user-copy:hover { color: #176c70; }
+.user-copy.copied-user, .user-copy.copied-user:hover { color: #9aa9ac; }
+.user-copy.copied-user small { color: #aab7b9; }
 .user-copy:focus-visible { border-radius: 4px; outline: 2px solid #238f86; outline-offset: 3px; }
 .wealth { color: #b27514; font-weight: 900; }
+.wealth small { margin-left: 3px; color: #8f7a54; font-size: 11px; font-weight: 600; }
 .empty { padding: 58px 20px; color: #829699; text-align: center; }
+.hidden { display: none !important; }
 .footnote { color: #71888c; font-size: 12px; text-align: right; }
 .toast { position: fixed; right: 20px; bottom: 20px; z-index: 10; max-width: calc(100vw - 40px); padding: 11px 14px; color: white; background: #17343b; border-radius: 6px; box-shadow: 0 8px 24px rgba(17, 72, 76, .22); opacity: 0; transform: translateY(8px); pointer-events: none; transition: opacity .16s ease, transform .16s ease; }
 .toast.visible { opacity: 1; transform: translateY(0); }
@@ -433,7 +448,41 @@ tbody tr:nth-child(even) { background: #fbfdfd; }
 
 STATIC_EXPORT_JS = """
 const toast = document.querySelector("#toast");
+const copiedUserStorageKey = "hellofish-copied-user-ids-v1";
+const copiedUserTtlMs = 24 * 60 * 60 * 1000;
+const copiedUsers = new Map();
 let toastTimer;
+
+function restoreCopiedUsers() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(copiedUserStorageKey) || "{}");
+        const now = Date.now();
+        if (saved && typeof saved === "object" && !Array.isArray(saved)) {
+            for (const [userId, copiedAt] of Object.entries(saved)) {
+                if (Number.isFinite(copiedAt) && now - copiedAt < copiedUserTtlMs) {
+                    copiedUsers.set(userId, copiedAt);
+                }
+            }
+        }
+        localStorage.setItem(copiedUserStorageKey, JSON.stringify(Object.fromEntries(copiedUsers)));
+    } catch (_) {
+        // Some browsers disable storage for file:// exports; copying still works.
+    }
+}
+
+function wasUserCopied(userId) {
+    const copiedAt = copiedUsers.get(userId);
+    return Number.isFinite(copiedAt) && Date.now() - copiedAt < copiedUserTtlMs;
+}
+
+function rememberCopiedUser(userId) {
+    copiedUsers.set(userId, Date.now());
+    try {
+        localStorage.setItem(copiedUserStorageKey, JSON.stringify(Object.fromEntries(copiedUsers)));
+    } catch (_) {
+        // File exports can be opened with storage disabled.
+    }
+}
 
 function showToast(message) {
     toast.textContent = message;
@@ -458,11 +507,71 @@ async function copyUserId(button) {
             textarea.remove();
             if (!copied) throw new Error("copy failed");
         }
+        rememberCopiedUser(userId);
+        button.classList.add("copied-user");
         showToast(`已复制用户 ID：${userId}`);
     } catch (_) {
         showToast("复制失败，请手动选择用户 ID");
     }
 }
+
+const filterForm = document.querySelector("#static-filters");
+const rows = Array.from(document.querySelectorAll("#records-body tr"));
+const total = document.querySelector("#record-total");
+const empty = document.querySelector("#empty-state");
+
+function fieldValue(name) {
+    return filterForm.elements[name].value.trim();
+}
+
+function rowMatches(row) {
+    const startDate = fieldValue("start_date");
+    const endDate = fieldValue("end_date");
+    const scanDate = row.dataset.scanDate;
+    if ((startDate && scanDate < startDate) || (endDate && scanDate > endDate)) return false;
+
+    const gender = fieldValue("gender");
+    if (gender !== "all" && row.dataset.gender !== gender) return false;
+
+    const minimumWealth = fieldValue("min_wealth");
+    if (minimumWealth) {
+        const wealth = row.dataset.wealth === "" ? null : Number(row.dataset.wealth);
+        if (wealth === null) {
+            if (!filterForm.elements.include_unknown.checked) return false;
+        } else if (wealth <= Number(minimumWealth)) {
+            return false;
+        }
+    }
+
+    const minimumFriends = fieldValue("min_friends");
+    if (minimumFriends && Number(row.dataset.friends || 0) < Number(minimumFriends)) return false;
+    if (fieldValue("room_id") && row.dataset.roomId !== fieldValue("room_id")) return false;
+    if (fieldValue("user_id") && row.dataset.userId !== fieldValue("user_id")) return false;
+    const username = fieldValue("username").toLocaleLowerCase();
+    return !username || row.dataset.username.toLocaleLowerCase().includes(username);
+}
+
+function applyFilters() {
+    let shown = 0;
+    for (const row of rows) {
+        const matches = rowMatches(row);
+        row.classList.toggle("hidden", !matches);
+        if (matches) shown += 1;
+    }
+    total.textContent = shown;
+    empty.classList.toggle("hidden", shown !== 0);
+}
+
+filterForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    applyFilters();
+});
+filterForm.addEventListener("reset", () => setTimeout(applyFilters));
+
+restoreCopiedUsers();
+document.querySelectorAll("[data-user-id]").forEach((button) => {
+    button.classList.toggle("copied-user", wasUserCopied(button.dataset.userId));
+});
 
 document.addEventListener("click", (event) => {
     const button = event.target.closest("[data-user-id]");
@@ -492,6 +601,15 @@ def _format_html_yuan(contribution: Any) -> str:
     return html.escape(_format_yuan_amount(float(contribution) / 10).replace("元", " 元"))
 
 
+def _static_filter_gender(value: Any) -> str:
+    gender = str(value or "").strip()
+    if gender == "男":
+        return "male"
+    if gender == "女":
+        return "female"
+    return "unknown"
+
+
 def export_records_html(
     database_path: Path,
     settings_path: Path,
@@ -500,6 +618,19 @@ def export_records_html(
     rows = _query_export_records(database_path, settings_path, record_query)
     table_rows: list[str] = []
     for record in rows:
+        filter_values = {
+            "scan-date": str(record["scan_date"] or str(record["scanned_at"] or "")[:10]),
+            "wealth": "" if record["wealth_level"] is None else str(record["wealth_level"]),
+            "gender": _static_filter_gender(record["gender"]),
+            "friends": "" if record["close_friend_count"] is None else str(record["close_friend_count"]),
+            "room-id": str(record["room_id"] or ""),
+            "user-id": str(record["user_id"] or ""),
+            "username": str(record["username"] or ""),
+        }
+        filter_attributes = " ".join(
+            f'data-{name}="{html.escape(value, quote=True)}"'
+            for name, value in filter_values.items()
+        )
         room = (
             f'<div class="identity">{_html_text(record["room_name"])}'
             f'<small>ID {_html_text(record["room_id"])}</small></div>'
@@ -520,12 +651,14 @@ def export_records_html(
             _html_text(record["gender"]),
             _html_text(record["ip"]),
             _html_text(record["close_friend_count"]),
-            _html_text(record["wealth_level"], "???"),
-            _format_html_yuan(record["wealth_min_contribution"]),
+            (
+                f'{_html_text(record["wealth_level"], "???")}'
+                f'<small>（{_format_html_yuan(record["wealth_min_contribution"])}）</small>'
+            ),
             _html_text(record["charm_level"]),
         )
         table_rows.append(
-            "<tr>"
+            f"<tr {filter_attributes}>"
             + "".join(
                 f'<td class="wealth">{value}</td>' if index == 9 else f"<td>{value}</td>"
                 for index, value in enumerate(cells)
@@ -540,7 +673,6 @@ def export_records_html(
     )
     exported_at = datetime.now(timezone.utc).astimezone(CHINA_TZ).strftime("%Y-%m-%d %H:%M:%S")
     table_content = "".join(table_rows)
-    empty = "" if table_rows else '<div class="empty">当前条件下没有贡献记录</div>'
     document = f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -558,20 +690,32 @@ def export_records_html(
 </header>
 <main>
 <section class="summary">
-<div><strong>{len(rows)}</strong><span>条记录</span></div>
+<div><strong id="record-total">{len(rows)}</strong><span>条记录</span></div>
 <div><strong>{date_summary}</strong><span>数据范围</span></div>
 <time>导出于 {exported_at}</time>
 </section>
+<form id="static-filters" class="panel filters" aria-label="本地筛选条件">
+<div class="field"><label for="filter-start-date">开始日期</label><input id="filter-start-date" name="start_date" type="date" /></div>
+<div class="field"><label for="filter-end-date">结束日期</label><input id="filter-end-date" name="end_date" type="date" /></div>
+<div class="field"><label for="filter-min-wealth">财富等级大于</label><input id="filter-min-wealth" name="min_wealth" type="number" min="0" max="300" placeholder="不限" /></div>
+<label class="check-field"><input name="include_unknown" type="checkbox" checked />显示财富等级为 ??? 的记录</label>
+<div class="field"><label for="filter-gender">性别</label><select id="filter-gender" name="gender"><option value="all">不限</option><option value="male">男</option><option value="female">女</option><option value="unknown">未知</option></select></div>
+<div class="field"><label for="filter-min-friends">挚友数量至少</label><input id="filter-min-friends" name="min_friends" type="number" min="0" placeholder="不限" /></div>
+<div class="field"><label for="filter-room-id">厅 ID</label><input id="filter-room-id" name="room_id" type="search" placeholder="精确匹配" /></div>
+<div class="field"><label for="filter-user-id">用户 ID</label><input id="filter-user-id" name="user_id" type="search" placeholder="精确匹配" /></div>
+<div class="field wide"><label for="filter-username">用户名</label><input id="filter-username" name="username" type="search" placeholder="包含匹配" /></div>
+<div class="filter-actions"><button class="primary" type="submit">筛选</button><button class="secondary" type="reset">重置</button></div>
+</form>
 <section class="panel">
 <div class="table-scroll">
 <table>
-<thead><tr><th>日期 / 时间</th><th>厅</th><th>排名</th><th>距前一名金额</th><th>推测金额</th><th>用户</th><th>性别</th><th>IP 属地</th><th>挚友</th><th>财富等级</th><th>等级最低金额</th><th>魅力等级</th></tr></thead>
+<thead><tr><th>日期 / 时间</th><th>厅</th><th>排名</th><th>距前一名金额</th><th>推测金额</th><th>用户</th><th>性别</th><th>IP 属地</th><th>挚友</th><th>财富等级</th><th>魅力等级</th></tr></thead>
 <tbody>{table_content}</tbody>
 </table>
-{empty}
+<div id="empty-state" class="empty{' hidden' if table_rows else ''}">当前条件下没有贡献记录</div>
 </div>
 </section>
-<p class="footnote">金额按 10 贡献值 = 1 元换算。推测值以本次扫描最后一名为 1；缺失处按后续已知差值平均补算，第 1–3 名取相同值。</p>
+<p class="footnote">可在本地筛选导出文件中包含的记录；金额按 10 贡献值 = 1 元换算。推测值以本次扫描最后一名为 1；缺失处按后续已知差值平均补算，第 1–3 名取相同值。</p>
 </main>
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 <script>{STATIC_EXPORT_JS}</script>

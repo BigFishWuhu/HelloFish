@@ -19,11 +19,45 @@ const controls = {
 const state = {page: 1, pageSize: 50, total: 0, records: []};
 const storageKey = "hellofish-contribution-filters-v1";
 const exportStorageKey = "hellofish-contribution-export-columns-v1";
+const copiedUserStorageKey = "hellofish-copied-user-ids-v1";
+const copiedUserTtlMs = 24 * 60 * 60 * 1000;
+const copiedUsers = new Map();
 let toastTimer;
 
 function localIsoDate(value = new Date()) {
     const offset = value.getTimezoneOffset() * 60_000;
     return new Date(value.getTime() - offset).toISOString().slice(0, 10);
+}
+
+function restoreCopiedUsers() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(copiedUserStorageKey) || "{}");
+        const now = Date.now();
+        if (saved && typeof saved === "object" && !Array.isArray(saved)) {
+            for (const [userId, copiedAt] of Object.entries(saved)) {
+                if (Number.isFinite(copiedAt) && now - copiedAt < copiedUserTtlMs) {
+                    copiedUsers.set(userId, copiedAt);
+                }
+            }
+        }
+        localStorage.setItem(copiedUserStorageKey, JSON.stringify(Object.fromEntries(copiedUsers)));
+    } catch (_) {
+        copiedUsers.clear();
+    }
+}
+
+function wasUserCopied(userId) {
+    const copiedAt = copiedUsers.get(userId);
+    return Number.isFinite(copiedAt) && Date.now() - copiedAt < copiedUserTtlMs;
+}
+
+function rememberCopiedUser(userId) {
+    copiedUsers.set(userId, Date.now());
+    try {
+        localStorage.setItem(copiedUserStorageKey, JSON.stringify(Object.fromEntries(copiedUsers)));
+    } catch (_) {
+        // Copying should still work when local storage is unavailable.
+    }
 }
 
 function restoreFilters() {
@@ -138,9 +172,12 @@ function userCopyButton(record) {
     }
     button.title = "点击复制用户 ID";
     button.setAttribute("aria-label", `${escapeText(record.username)}，用户 ID ${record.user_id}，点击复制用户 ID`);
+    button.classList.toggle("copied-user", wasUserCopied(String(record.user_id)));
     button.addEventListener("click", async () => {
         try {
             await copyText(String(record.user_id), "用户 ID");
+            rememberCopiedUser(String(record.user_id));
+            button.classList.add("copied-user");
         } catch (_) {
             showToast("复制用户 ID 失败，请手动选择复制");
         }
@@ -162,6 +199,12 @@ function renderRecords() {
         room.append(roomId);
         const user = userCopyButton(record);
 
+        const wealth = document.createElement("span");
+        wealth.textContent = record.wealth_level ?? "???";
+        const wealthMinimum = document.createElement("small");
+        wealthMinimum.textContent = `（${formatThreshold(record.wealth_min_contribution)}）`;
+        wealth.append(wealthMinimum);
+
         const values = [
             scanned,
             room,
@@ -172,8 +215,7 @@ function renderRecords() {
             record.gender,
             record.ip,
             record.close_friend_count,
-            record.wealth_level ?? "???",
-            formatThreshold(record.wealth_min_contribution),
+            wealth,
             record.charm_level,
         ];
         values.forEach((value, index) => {
@@ -186,7 +228,6 @@ function renderRecords() {
         body.append(row);
     }
     $("#empty-state").classList.toggle("hidden", state.records.length !== 0);
-    $("#threshold-heading").textContent = controls.unit.value === "yuan" ? "等级最低金额" : "等级最低贡献值";
     $("#gap-heading").textContent = controls.unit.value === "yuan" ? "距前一名金额" : "距前一名贡献值";
     $("#estimated-heading").textContent = controls.unit.value === "yuan" ? "推测金额" : "推测贡献值";
 }
@@ -397,4 +438,5 @@ $("#clear-all-columns").addEventListener("click", () => {
 });
 
 restoreFilters();
+restoreCopiedUsers();
 loadRecords();
