@@ -120,6 +120,14 @@ function formatThreshold(contribution) {
     return formatChineseNumber(Number(contribution) / 10, " 元");
 }
 
+function formatCharmThreshold(charmValue) {
+    if (charmValue === null || charmValue === undefined) return "???";
+    if (controls.unit.value === "contribution") {
+        return formatChineseNumber(charmValue, " 魅力值");
+    }
+    return formatChineseNumber(Number(charmValue) / 10, " 元");
+}
+
 function formatContributionValue(contribution) {
     return formatThreshold(contribution);
 }
@@ -212,6 +220,21 @@ function renderRecords() {
         wealthMinimum.textContent = `（${formatThreshold(record.wealth_min_contribution)}）`;
         wealth.append(wealthMinimum);
 
+        const charm = document.createElement("span");
+        charm.textContent = record.charm_level ?? "???";
+        const charmMinimum = document.createElement("small");
+        charmMinimum.textContent = `（${formatCharmThreshold(record.charm_min_value)}）`;
+        charm.append(charmMinimum);
+
+        const assessment = document.createElement("span");
+        assessment.className = "assessment";
+        assessment.textContent = record.account_assessment ?? "—";
+        if (record.account_assessment === "疑似排挡账号") {
+            assessment.classList.add("suspected");
+        } else if (record.account_assessment === "高概率真实玩家") {
+            assessment.classList.add("likely-real");
+        }
+
         const values = [
             scanned,
             room,
@@ -223,13 +246,15 @@ function renderRecords() {
             record.ip,
             record.close_friend_count,
             wealth,
-            record.charm_level,
+            charm,
+            assessment,
         ];
         values.forEach((value, index) => {
             const cell = document.createElement("td");
             if (value instanceof Node) cell.append(value);
             else cell.textContent = escapeText(value);
             if (index === 9) cell.className = "wealth";
+            if (index === 10) cell.className = "charm";
             row.append(cell);
         });
         body.append(row);

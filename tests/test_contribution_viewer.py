@@ -28,6 +28,7 @@ from contribution_viewer import (  # noqa: E402
     load_settings,
     parse_export_columns,
     query_records,
+    _account_assessment,
     _format_yuan_amount,
     save_settings,
 )
@@ -118,6 +119,16 @@ class ContributionViewerTest(unittest.TestCase):
         self.assertEqual(result["records"][0]["contribution_gap"], 250)
         self.assertEqual(result["records"][0]["estimated_contribution_value"], 1_500)
         self.assertIsNotNone(result["records"][0]["wealth_min_contribution"])
+        self.assertIsNotNone(result["records"][0]["charm_min_value"])
+        self.assertEqual(result["records"][0]["account_assessment"], "高概率真实玩家")
+
+    def test_account_assessment_uses_fifty_percent_wealth_boundary(self) -> None:
+        self.assertEqual(_account_assessment(150, 100), "高概率真实玩家")
+        self.assertEqual(_account_assessment(149, 100), "疑似排挡账号")
+        self.assertEqual(_account_assessment(100, 150), "疑似排挡账号")
+        self.assertEqual(_account_assessment(100, 0), "高概率真实玩家")
+        self.assertIsNone(_account_assessment(0, 0))
+        self.assertIsNone(_account_assessment(None, 100))
 
     def test_cloud_page_uses_china_timezone_for_default_date(self) -> None:
         app_path = Path(__file__).resolve().parents[1] / "cloud" / "web" / "contributions" / "app.js"
@@ -236,6 +247,21 @@ class ContributionViewerTest(unittest.TestCase):
         self.assertEqual(rows[0], ["距前一名", "推测贡献值"])
         self.assertEqual(rows[1], ["250", "1500"])
 
+    def test_csv_export_includes_charm_amount_and_account_assessment(self) -> None:
+        query = RecordQuery.from_query({}, today=date(2026, 9, 14))
+        payload = export_records_csv(
+            self.database_path,
+            self.settings_path,
+            query,
+            ["charm_level", "charm_min_value", "charm_min_yuan", "account_assessment"],
+        )
+        rows = list(csv.reader(io.StringIO(payload.decode("utf-8-sig"))))
+        self.assertEqual(
+            rows[0],
+            ["魅力等级", "等级最低魅力值", "魅力等级最低金额（元）", "账号判断"],
+        )
+        self.assertEqual(rows[1], ["3", "30", "3元", "高概率真实玩家"])
+
     def test_csv_export_formats_yuan_amounts_by_wan(self) -> None:
         self.assertEqual(_format_yuan_amount(9999), "9999元")
         self.assertEqual(_format_yuan_amount(10000), "1万元")
@@ -304,6 +330,8 @@ class ContributionViewerTest(unittest.TestCase):
         self.assertIn("25 元", document)
         self.assertIn("150 元", document)
         self.assertIn('<td class="wealth">20<small>（120 元）</small></td>', document)
+        self.assertIn('<td class="charm">3<small>（3 元）</small></td>', document)
+        self.assertIn("高概率真实玩家", document)
         self.assertNotIn("<th>等级最低金额</th>", document)
         self.assertIn("ID u2", document)
         self.assertIn('data-user-id="u2"', document)

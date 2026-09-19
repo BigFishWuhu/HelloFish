@@ -33,6 +33,11 @@ from voice_hall import (  # noqa: E402
     _should_save_level_samples,
     _was_scanned_on,
 )
+from charm_levels import (  # noqa: E402
+    CHARM_LEVEL_MIN_VALUES,
+    charm_level_for_value,
+    minimum_charm_for_level,
+)
 from voice_hall_storage import VoiceHallDatabase  # noqa: E402
 from wealth_levels import (  # noqa: E402
     WEALTH_LEVEL_MIN_CONTRIBUTIONS,
@@ -169,6 +174,63 @@ class HallListRecognitionTest(unittest.TestCase):
             ocr("120323", (261, 1080, 90, 30)),
         ]
         self.assertTrue(self.scanner._is_hall_list(items))
+
+    def test_hall_list_scroll_retries_transient_empty_ocr(self) -> None:
+        context = SimpleNamespace(
+            tasker=SimpleNamespace(controller=FakeController(), stopping=False)
+        )
+        candidate = {"hall_id": "23456"}
+
+        with (
+            patch.object(self.scanner, "_scroll_hall_list") as scroll,
+            patch.object(
+                self.scanner,
+                "_capture_ocr",
+                side_effect=[(None, []), (None, [ocr("23456", (260, 500, 80, 30))])],
+            ),
+            patch.object(
+                self.scanner,
+                "_find_hall_candidates",
+                side_effect=[[], [candidate]],
+            ),
+        ):
+            signature = self.scanner._scroll_hall_list_until_changed(
+                context,
+                0,
+                ("12345",),
+            )
+
+        self.assertEqual(signature, ("23456",))
+        scroll.assert_called_once_with(context, 0)
+
+    def test_hall_list_scroll_retries_gesture_when_page_is_unchanged(self) -> None:
+        context = SimpleNamespace(
+            tasker=SimpleNamespace(controller=FakeController(), stopping=False)
+        )
+        before = {"hall_id": "12345"}
+        after = {"hall_id": "23456"}
+
+        with (
+            patch.object(self.scanner, "_scroll_hall_list") as scroll,
+            patch.object(
+                self.scanner,
+                "_capture_ocr",
+                side_effect=[(None, []), (None, []), (None, [])],
+            ),
+            patch.object(
+                self.scanner,
+                "_find_hall_candidates",
+                side_effect=[[before], [before], [after]],
+            ),
+        ):
+            signature = self.scanner._scroll_hall_list_until_changed(
+                context,
+                0,
+                ("12345",),
+            )
+
+        self.assertEqual(signature, ("23456",))
+        self.assertEqual(scroll.call_count, 2)
 
     def test_number_outside_card_column_is_not_a_hall(self) -> None:
         items = [
@@ -1061,6 +1123,15 @@ class HallListRecognitionTest(unittest.TestCase):
         self.assertEqual(wealth_level_for_contribution(95_000), 77)
         self.assertEqual(wealth_level_for_contribution(999_999_999), 300)
 
+    def test_charm_level_mapping_covers_all_levels_and_boundaries(self) -> None:
+        self.assertEqual(len(CHARM_LEVEL_MIN_VALUES), 301)
+        self.assertEqual(minimum_charm_for_level(77), 95_000)
+        self.assertEqual(minimum_charm_for_level(151), 1_650_000)
+        self.assertEqual(minimum_charm_for_level(300), 220_000_000)
+        self.assertEqual(charm_level_for_value(94_999), 76)
+        self.assertEqual(charm_level_for_value(95_000), 77)
+        self.assertEqual(charm_level_for_value(999_999_999), 300)
+
     def test_sqlite_upsert_and_enriched_frontend_view(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             database = VoiceHallDatabase(Path(temp_dir) / "voice_hall.sqlite3")
@@ -1087,6 +1158,9 @@ class HallListRecognitionTest(unittest.TestCase):
             thresholds = database.fetch_all(
                 "SELECT * FROM wealth_level_thresholds ORDER BY level"
             )
+            charm_thresholds = database.fetch_all(
+                "SELECT * FROM charm_level_thresholds ORDER BY level"
+            )
 
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["rank"], 1)
@@ -1096,7 +1170,11 @@ class HallListRecognitionTest(unittest.TestCase):
             self.assertEqual(rows[0]["wealth_min_contribution"], 95_000)
             self.assertEqual(rows[0]["next_wealth_level"], 78)
             self.assertEqual(rows[0]["next_wealth_min_contribution"], 100_000)
+            self.assertEqual(rows[0]["charm_min_value"], 100)
+            self.assertEqual(rows[0]["next_charm_level"], 11)
+            self.assertEqual(rows[0]["next_charm_min_value"], 200)
             self.assertEqual(len(thresholds), 301)
+            self.assertEqual(len(charm_thresholds), 301)
 
     def test_sqlite_starts_empty_and_does_not_import_legacy_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1116,6 +1194,7 @@ class HallListRecognitionTest(unittest.TestCase):
 
             contributions = database.fetch_all("SELECT * FROM contributions")
             thresholds = database.fetch_all("SELECT * FROM wealth_level_thresholds")
+            charm_thresholds = database.fetch_all("SELECT * FROM charm_level_thresholds")
             contribution_columns = {
                 row["name"]
                 for row in database.fetch_all("PRAGMA table_info(contributions)")
@@ -1123,6 +1202,7 @@ class HallListRecognitionTest(unittest.TestCase):
 
             self.assertEqual(contributions, [])
             self.assertEqual(len(thresholds), 301)
+            self.assertEqual(len(charm_thresholds), 301)
             self.assertNotIn("wealth_min_contribution", contribution_columns)
 
     def test_contribution_scroll_starts_above_bottom_overlay(self) -> None:
@@ -1907,6 +1987,8 @@ class HallListRecognitionTest(unittest.TestCase):
                         (None, hall_list_items),
                         (None, room_items),
                         (None, hall_list_items),
+                        (None, hall_list_items),
+                        (None, hall_list_items),
                     ],
                 ),
                 patch.object(self.scanner, "_return_to_hall_list", return_value=True),
@@ -1976,6 +2058,8 @@ class HallListRecognitionTest(unittest.TestCase):
                     side_effect=[
                         (None, hall_list_items),
                         (None, room_items),
+                        (None, hall_list_items),
+                        (None, hall_list_items),
                         (None, hall_list_items),
                     ],
                 ),

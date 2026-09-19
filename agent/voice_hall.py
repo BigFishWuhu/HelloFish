@@ -77,6 +77,10 @@ HALL_CATEGORY_Y_RANGE = (35, 115)
 HALL_NAV_MIN_Y = 1160
 HALL_CARD_X_RANGE = (180, 520)
 HALL_CARD_Y_RANGE = (150, 1180)
+# OCR can briefly return the previous frame (or no card at all) while the
+# list is settling after a swipe.  A single empty/equal result must not be
+# treated as the end of the list.
+HALL_SCROLL_VERIFY_ATTEMPTS = 3
 PROFILE_ID_X_RANGE = (35, 175)
 PROFILE_ID_Y_RANGE = (590, 690)
 PROFILE_WEALTH_X_RANGE = (35, 125)
@@ -1007,11 +1011,10 @@ class ContributionScanner(CustomAction):
                 break
 
             before_signature = signature
-            self._scroll_hall_list(context, delay)
-            _, after_items = self._capture_ocr(context)
-            after_signature = tuple(
-                str(candidate["hall_id"])
-                for candidate in self._find_hall_candidates(after_items)
+            after_signature = self._scroll_hall_list_until_changed(
+                context,
+                delay,
+                before_signature,
             )
             if not after_signature or after_signature == before_signature:
                 self._log("厅列表到底或页面未变化，停止遍历")
@@ -1760,6 +1763,41 @@ class ContributionScanner(CustomAction):
         self._check_stopping(context)
         self.controller.post_swipe(360, 1140, 360, 360, 750).wait()
         self._sleep(context, delay)
+
+    def _scroll_hall_list_until_changed(
+        self,
+        context: Context,
+        delay: float,
+        before_signature: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """Scroll and verify the hall list without trusting one OCR frame.
+
+        The first retry only captures again.  If the list still looks
+        unchanged, a second swipe is allowed before the final verification.
+        This handles both transient OCR misses and gestures that did not take
+        effect, while avoiding three consecutive swipes that could skip cards.
+        """
+        after_signature: tuple[str, ...] = ()
+        for attempt in range(HALL_SCROLL_VERIFY_ATTEMPTS):
+            if attempt in (0, HALL_SCROLL_VERIFY_ATTEMPTS - 1):
+                self._scroll_hall_list(context, delay)
+
+            _, after_items = self._capture_ocr(context)
+            after_signature = tuple(
+                str(candidate["hall_id"])
+                for candidate in self._find_hall_candidates(after_items)
+            )
+            if after_signature and after_signature != before_signature:
+                return after_signature
+
+            if attempt + 1 < HALL_SCROLL_VERIFY_ATTEMPTS:
+                self._log(
+                    "厅列表下滑后暂未确认新页面，重试验证",
+                    f"第 {attempt + 1} 次",
+                    f"识别到 {len(after_signature)} 个厅",
+                )
+
+        return after_signature
 
     def _capture_ocr(
         self,

@@ -331,6 +331,32 @@ tbody tr:hover {
     font-size: 11px;
     font-weight: 600;
 }
+.charm {
+    color: #a43e83;
+    font-weight: 900;
+}
+.charm small {
+    margin-left: 3px;
+    color: #806077;
+    font-size: 11px;
+    font-weight: 600;
+}
+.assessment {
+    display: inline-block;
+    border-radius: 4px;
+    padding: 4px 7px;
+    font-size: 11px;
+    font-weight: 800;
+    white-space: nowrap;
+}
+.assessment.suspected {
+    color: #9b342e;
+    background: #fff0ed;
+}
+.assessment.likely-real {
+    color: #17634e;
+    background: #e7f5ef;
+}
 .pagination {
     display: flex;
     align-items: center;
@@ -488,7 +514,12 @@ textarea {
 @media (max-width: 720px) {
     .hero {
         align-items: flex-start;
+        flex-direction: column;
         padding-top: 30px;
+    }
+    .hero-actions {
+        justify-content: flex-start;
+        width: 100%;
     }
     .hero .secondary {
         flex: 0 0 auto;

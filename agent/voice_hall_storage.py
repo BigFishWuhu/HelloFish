@@ -4,6 +4,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any, Iterable
 
+from charm_levels import CHARM_LEVEL_MIN_VALUES
 from wealth_levels import WEALTH_LEVEL_MIN_CONTRIBUTIONS
 
 
@@ -45,6 +46,11 @@ class VoiceHallDatabase:
                 CREATE TABLE IF NOT EXISTS wealth_level_thresholds (
                     level INTEGER PRIMARY KEY,
                     min_contribution INTEGER NOT NULL UNIQUE
+                );
+
+                CREATE TABLE IF NOT EXISTS charm_level_thresholds (
+                    level INTEGER PRIMARY KEY,
+                    min_charm_value INTEGER NOT NULL UNIQUE
                 );
 
                 CREATE TABLE IF NOT EXISTS contributions (
@@ -95,12 +101,19 @@ class VoiceHallDatabase:
                     c.*,
                     current_level.min_contribution AS wealth_min_contribution,
                     next_level.level AS next_wealth_level,
-                    next_level.min_contribution AS next_wealth_min_contribution
+                    next_level.min_contribution AS next_wealth_min_contribution,
+                    current_charm.min_charm_value AS charm_min_value,
+                    next_charm.level AS next_charm_level,
+                    next_charm.min_charm_value AS next_charm_min_value
                 FROM contributions AS c
                 LEFT JOIN wealth_level_thresholds AS current_level
                     ON current_level.level = c.wealth_level
                 LEFT JOIN wealth_level_thresholds AS next_level
-                    ON next_level.level = c.wealth_level + 1;
+                    ON next_level.level = c.wealth_level + 1
+                LEFT JOIN charm_level_thresholds AS current_charm
+                    ON current_charm.level = c.charm_level
+                LEFT JOIN charm_level_thresholds AS next_charm
+                    ON next_charm.level = c.charm_level + 1;
                 """
             )
             existing_columns = {
@@ -120,6 +133,15 @@ class VoiceHallDatabase:
                     min_contribution = excluded.min_contribution
                 """,
                 enumerate(WEALTH_LEVEL_MIN_CONTRIBUTIONS),
+            )
+            connection.executemany(
+                """
+                INSERT INTO charm_level_thresholds (level, min_charm_value)
+                VALUES (?, ?)
+                ON CONFLICT(level) DO UPDATE SET
+                    min_charm_value = excluded.min_charm_value
+                """,
+                enumerate(CHARM_LEVEL_MIN_VALUES),
             )
 
     @staticmethod

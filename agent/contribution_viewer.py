@@ -52,6 +52,9 @@ EXPORT_COLUMNS = {
     "wealth_min_contribution": "等级最低贡献值",
     "wealth_min_yuan": "等级最低金额（元）",
     "charm_level": "魅力等级",
+    "charm_min_value": "等级最低魅力值",
+    "charm_min_yuan": "魅力等级最低金额（元）",
+    "account_assessment": "账号判断",
 }
 DEFAULT_EXPORT_COLUMNS = (
     "scanned_at",
@@ -68,6 +71,8 @@ DEFAULT_EXPORT_COLUMNS = (
     "wealth_level",
     "wealth_min_yuan",
     "charm_level",
+    "charm_min_yuan",
+    "account_assessment",
 )
 
 _SETTINGS_LOCK = threading.Lock()
@@ -286,10 +291,13 @@ def query_records(
                 c.gender, c.ip, c.close_friend_count, c.wealth_level,
                 c.charm_level, c.contribution_gap, c.estimated_contribution_value,
                 c.scanned_at, c.scan_date,
-                thresholds.min_contribution AS wealth_min_contribution
+                wealth_thresholds.min_contribution AS wealth_min_contribution,
+                charm_thresholds.min_charm_value AS charm_min_value
             FROM contributions AS c
-            LEFT JOIN wealth_level_thresholds AS thresholds
-                ON thresholds.level = c.wealth_level
+            LEFT JOIN wealth_level_thresholds AS wealth_thresholds
+                ON wealth_thresholds.level = c.wealth_level
+            LEFT JOIN charm_level_thresholds AS charm_thresholds
+                ON charm_thresholds.level = c.charm_level
             WHERE {where_sql}
             ORDER BY {order_by}
             LIMIT ? OFFSET ?
@@ -297,8 +305,17 @@ def query_records(
             (*parameters, record_query.page_size, offset),
         ).fetchall()
 
+    records = []
+    for row in rows:
+        record = dict(row)
+        record["account_assessment"] = _account_assessment(
+            record["wealth_min_contribution"],
+            record["charm_min_value"],
+        )
+        records.append(record)
+
     return {
-        "records": [dict(row) for row in rows],
+        "records": records,
         "total": total,
         "page": record_query.page,
         "page_size": record_query.page_size,
@@ -329,16 +346,39 @@ def _format_yuan_amount(value: Any) -> str:
     return f"{display}万元"
 
 
+def _account_assessment(wealth_value: Any, charm_value: Any) -> str | None:
+    if wealth_value is None or charm_value is None:
+        return None
+    wealth = int(wealth_value)
+    charm = int(charm_value)
+    if wealth == 0 and charm == 0:
+        return None
+    if wealth * 2 >= charm * 3:
+        return "高概率真实玩家"
+    return "疑似排挡账号"
+
+
 def _export_value(record: sqlite3.Row, column: str) -> Any:
     if column == "wealth_min_yuan":
         contribution = record["wealth_min_contribution"]
         if contribution is None:
             return "???"
         return _format_yuan_amount(contribution / 10)
+    if column == "charm_min_yuan":
+        charm_value = record["charm_min_value"]
+        if charm_value is None:
+            return "???"
+        return _format_yuan_amount(charm_value / 10)
+    if column == "account_assessment":
+        return _account_assessment(
+            record["wealth_min_contribution"],
+            record["charm_min_value"],
+        ) or "???"
     value = record[column]
     if value is None and column in {
         "wealth_level",
         "wealth_min_contribution",
+        "charm_min_value",
         "contribution_gap",
         "estimated_contribution_value",
         "charm_level",
@@ -367,10 +407,13 @@ def _query_export_records(
                 c.gender, c.ip, c.close_friend_count, c.wealth_level,
                 c.charm_level, c.contribution_gap, c.estimated_contribution_value,
                 c.scanned_at, c.scan_date,
-                thresholds.min_contribution AS wealth_min_contribution
+                wealth_thresholds.min_contribution AS wealth_min_contribution,
+                charm_thresholds.min_charm_value AS charm_min_value
             FROM contributions AS c
-            LEFT JOIN wealth_level_thresholds AS thresholds
-                ON thresholds.level = c.wealth_level
+            LEFT JOIN wealth_level_thresholds AS wealth_thresholds
+                ON wealth_thresholds.level = c.wealth_level
+            LEFT JOIN charm_level_thresholds AS charm_thresholds
+                ON charm_thresholds.level = c.charm_level
             WHERE {where_sql}
             ORDER BY {order_by}
             """,
@@ -436,6 +479,11 @@ tbody tr:nth-child(even) { background: #fbfdfd; }
 .user-copy:focus-visible { border-radius: 4px; outline: 2px solid #238f86; outline-offset: 3px; }
 .wealth { color: #b27514; font-weight: 900; }
 .wealth small { margin-left: 3px; color: #8f7a54; font-size: 11px; font-weight: 600; }
+.charm { color: #a43e83; font-weight: 900; }
+.charm small { margin-left: 3px; color: #806077; font-size: 11px; font-weight: 600; }
+.assessment { display: inline-block; border-radius: 4px; padding: 4px 7px; font-size: 11px; font-weight: 800; }
+.assessment.suspected { color: #9b342e; background: #fff0ed; }
+.assessment.likely-real { color: #17634e; background: #e7f5ef; }
 .empty { padding: 58px 20px; color: #829699; text-align: center; }
 .hidden { display: none !important; }
 .footnote { color: #71888c; font-size: 12px; text-align: right; }
@@ -639,6 +687,18 @@ def export_records_html(
             f'title="点击复制用户 ID" aria-label="点击复制用户 ID {user_id}">'
             f'{_html_text(record["username"])}<small>ID {user_id}</small></button>'
         )
+        assessment = _account_assessment(
+            record["wealth_min_contribution"],
+            record["charm_min_value"],
+        )
+        assessment_class = (
+            "suspected" if assessment == "疑似排挡账号" else "likely-real"
+        )
+        assessment_markup = (
+            f'<span class="assessment {assessment_class}">{_html_text(assessment)}</span>'
+            if assessment
+            else "—"
+        )
         cells = (
             _format_html_scan_time(record["scanned_at"]),
             room,
@@ -653,12 +713,20 @@ def export_records_html(
                 f'{_html_text(record["wealth_level"], "???")}'
                 f'<small>（{_format_html_yuan(record["wealth_min_contribution"])}）</small>'
             ),
-            _html_text(record["charm_level"]),
+            (
+                f'{_html_text(record["charm_level"], "???")}'
+                f'<small>（{_format_html_yuan(record["charm_min_value"])}）</small>'
+            ),
+            assessment_markup,
         )
         table_rows.append(
             f"<tr {filter_attributes}>"
             + "".join(
-                f'<td class="wealth">{value}</td>' if index == 9 else f"<td>{value}</td>"
+                f'<td class="wealth">{value}</td>'
+                if index == 9
+                else f'<td class="charm">{value}</td>'
+                if index == 10
+                else f"<td>{value}</td>"
                 for index, value in enumerate(cells)
             )
             + "</tr>"
@@ -707,13 +775,13 @@ def export_records_html(
 <section class="panel">
 <div class="table-scroll">
 <table>
-<thead><tr><th>日期 / 时间</th><th>厅</th><th>排名</th><th>距前一名金额</th><th>推测金额</th><th>用户</th><th>性别</th><th>IP 属地</th><th>挚友</th><th>财富等级</th><th>魅力等级</th></tr></thead>
+<thead><tr><th>日期 / 时间</th><th>厅</th><th>排名</th><th>距前一名金额</th><th>推测金额</th><th>用户</th><th>性别</th><th>IP 属地</th><th>挚友</th><th>财富等级</th><th>魅力等级</th><th>账号判断</th></tr></thead>
 <tbody id="records-body">{table_content}</tbody>
 </table>
 <div id="empty-state" class="empty{' hidden' if table_rows else ''}">当前条件下没有贡献记录</div>
 </div>
 </section>
-<p class="footnote">可在本地筛选导出文件中包含的记录；金额按 10 贡献值 = 1 元换算。推测值以本次扫描最后一名为 1；缺失处按后续已知差值平均补算，第 1–3 名取相同值。</p>
+<p class="footnote">可在本地筛选导出文件中包含的记录；金额按 10 贡献值或魅力值 = 1 元换算。财富金额达到魅力金额的 1.5 倍时标记为高概率真实玩家，否则标记为疑似排挡账号。推测值以本次扫描最后一名为 1；缺失处按后续已知差值平均补算，第 1–3 名取相同值。</p>
 </main>
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 <script>{STATIC_EXPORT_JS}</script>
