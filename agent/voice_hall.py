@@ -77,6 +77,8 @@ HALL_CATEGORY_Y_RANGE = (35, 115)
 HALL_NAV_MIN_Y = 1160
 HALL_CARD_X_RANGE = (180, 520)
 HALL_CARD_Y_RANGE = (150, 1180)
+HALL_LIST_REFRESH_COUNT = 2
+HALL_LIST_REFRESH_SWIPE = (360, 360, 360, 1140, 750)
 # OCR can briefly return the previous frame (or no card at all) while the
 # list is settling after a swipe.  A single empty/equal result must not be
 # treated as the end of the list.
@@ -870,6 +872,7 @@ class ContributionScanner(CustomAction):
         if not self._return_to_hall_list(context, max_attempts=5):
             self._log("没有回到厅列表页，任务结束")
             return False
+        self._refresh_hall_list_order(context, delay)
 
         new_hall_count = 0
         page_signatures: set[tuple[str, ...]] = set()
@@ -1763,6 +1766,13 @@ class ContributionScanner(CustomAction):
         self._check_stopping(context)
         self.controller.post_swipe(360, 1140, 360, 360, 750).wait()
         self._sleep(context, delay)
+
+    def _refresh_hall_list_order(self, context: Context, delay: float) -> None:
+        self._log("首次读取厅列表前，下拉刷新排序两次")
+        for _ in range(HALL_LIST_REFRESH_COUNT):
+            self._check_stopping(context)
+            self.controller.post_swipe(*HALL_LIST_REFRESH_SWIPE).wait()
+            self._sleep(context, delay)
 
     def _scroll_hall_list_until_changed(
         self,

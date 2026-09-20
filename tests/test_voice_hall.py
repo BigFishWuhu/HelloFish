@@ -232,6 +232,76 @@ class HallListRecognitionTest(unittest.TestCase):
         self.assertEqual(signature, ("23456",))
         self.assertEqual(scroll.call_count, 2)
 
+    def test_initial_hall_list_refresh_pulls_down_twice(self) -> None:
+        controller = FakeController()
+        context = SimpleNamespace(
+            tasker=SimpleNamespace(controller=controller, stopping=False)
+        )
+        self.scanner.controller = controller
+
+        with (
+            patch.object(self.scanner, "_sleep") as sleep,
+            patch.object(self.scanner, "_log"),
+        ):
+            self.scanner._refresh_hall_list_order(context, 0.8)
+
+        self.assertEqual(
+            controller.swipes,
+            [
+                (360, 360, 360, 1140, 750),
+                (360, 360, 360, 1140, 750),
+            ],
+        )
+        self.assertEqual(
+            [call.args for call in sleep.call_args_list],
+            [(context, 0.8), (context, 0.8)],
+        )
+
+    def test_regular_scan_refreshes_before_reading_initial_hall_list(self) -> None:
+        context = SimpleNamespace(
+            tasker=SimpleNamespace(controller=FakeController(), stopping=False)
+        )
+        call_order = []
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            argv = SimpleNamespace(
+                custom_action_param=json.dumps(
+                    {
+                        "database": str(Path(temp_dir) / "voice_hall.sqlite3"),
+                        "state_file": str(Path(temp_dir) / "state.json"),
+                        "max_hall_pages": 1,
+                        "action_delay": 0,
+                    }
+                )
+            )
+            with (
+                patch.object(
+                    self.scanner,
+                    "_return_to_hall_list",
+                    side_effect=lambda *args, **kwargs: (
+                        call_order.append("return") or True
+                    ),
+                ),
+                patch.object(
+                    self.scanner,
+                    "_refresh_hall_list_order",
+                    side_effect=lambda *args, **kwargs: call_order.append("refresh"),
+                ),
+                patch.object(
+                    self.scanner,
+                    "_capture_ocr",
+                    side_effect=lambda *args, **kwargs: (
+                        call_order.append("capture") or (None, [])
+                    ),
+                ),
+                patch.object(self.scanner, "_is_hall_list", return_value=True),
+                patch.object(self.scanner, "_scroll_hall_list"),
+                patch.object(self.scanner, "_log"),
+            ):
+                self.assertTrue(self.scanner._run(context, argv))
+
+        self.assertEqual(call_order[:3], ["return", "refresh", "capture"])
+
     def test_number_outside_card_column_is_not_a_hall(self) -> None:
         items = [
             ocr("120323", (20, 283, 115, 30)),
@@ -1992,6 +2062,7 @@ class HallListRecognitionTest(unittest.TestCase):
                     ],
                 ),
                 patch.object(self.scanner, "_return_to_hall_list", return_value=True),
+                patch.object(self.scanner, "_refresh_hall_list_order") as refresh,
                 patch.object(self.scanner, "_is_hall_list", return_value=True),
                 patch.object(
                     self.scanner,
@@ -2015,6 +2086,7 @@ class HallListRecognitionTest(unittest.TestCase):
                 result = self.scanner._run(context, argv)
 
             self.assertTrue(result)
+            refresh.assert_called_once_with(context, 0)
             self.assertEqual(scan.call_count, 2)
             self.assertEqual(enter.call_count, 3)
             self.assertEqual(
@@ -2064,6 +2136,7 @@ class HallListRecognitionTest(unittest.TestCase):
                     ],
                 ),
                 patch.object(self.scanner, "_return_to_hall_list", return_value=True),
+                patch.object(self.scanner, "_refresh_hall_list_order") as refresh,
                 patch.object(self.scanner, "_is_hall_list", return_value=True),
                 patch.object(
                     self.scanner,
@@ -2084,6 +2157,7 @@ class HallListRecognitionTest(unittest.TestCase):
                 result = self.scanner._run(context, argv)
 
             self.assertTrue(result)
+            refresh.assert_called_once_with(context, 0)
             self.assertEqual(scan.call_count, 2)
             self.assertEqual(enter.call_count, 3)
             state = json.loads(state_path.read_text(encoding="utf-8"))
