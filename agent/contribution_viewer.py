@@ -130,11 +130,24 @@ def _parse_int(value: str, default: int, minimum: int, maximum: int) -> int:
     return min(maximum, max(minimum, parsed))
 
 
-def _parse_iso_date(value: str, fallback: date) -> date:
+def _parse_china_time(value: str, fallback: date) -> tuple[datetime, timedelta]:
+    """Parse a Web date/datetime value and return its inclusive precision."""
+    text = str(value or "").strip()
+    if "T" in text or " " in text:
+        try:
+            parsed = datetime.fromisoformat(text)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=CHINA_TZ)
+            else:
+                parsed = parsed.astimezone(CHINA_TZ)
+            return parsed.replace(second=0, microsecond=0), timedelta(minutes=1)
+        except (TypeError, ValueError):
+            pass
     try:
-        return date.fromisoformat(value)
+        parsed_date = date.fromisoformat(text)
     except (TypeError, ValueError):
-        return fallback
+        parsed_date = fallback
+    return datetime.combine(parsed_date, datetime.min.time(), CHINA_TZ), timedelta(days=1)
 
 
 def _china_today() -> date:
@@ -142,22 +155,32 @@ def _china_today() -> date:
     return datetime.now(timezone.utc).astimezone(CHINA_TZ).date()
 
 
-def _date_range(query: dict[str, list[str]], today: date) -> tuple[date, date]:
+def _time_range(query: dict[str, list[str]], today: date) -> tuple[datetime, datetime]:
     mode = _single(query, "date_mode", "today")
     if mode == "recent":
         days = _parse_int(_single(query, "days", "7"), 7, 1, 3650)
-        return today - timedelta(days=days - 1), today
+        start = datetime.combine(
+            today - timedelta(days=days - 1), datetime.min.time(), CHINA_TZ
+        )
+        return start, datetime.combine(
+            today + timedelta(days=1), datetime.min.time(), CHINA_TZ
+        )
     if mode == "custom":
-        start = _parse_iso_date(_single(query, "start_date"), today)
-        end = _parse_iso_date(_single(query, "end_date"), today)
-        return (end, start) if start > end else (start, end)
-    return today, today
+        start_value = _single(query, "start_time") or _single(query, "start_date")
+        end_value = _single(query, "end_time") or _single(query, "end_date")
+        start, start_precision = _parse_china_time(start_value, today)
+        end, end_precision = _parse_china_time(end_value, today)
+        if start <= end:
+            return start, end + end_precision
+        return end, start + start_precision
+    start = datetime.combine(today, datetime.min.time(), CHINA_TZ)
+    return start, start + timedelta(days=1)
 
 
 @dataclass(frozen=True)
 class RecordQuery:
-    start_date: date
-    end_date: date
+    start_at: datetime
+    end_at: datetime
     min_wealth_level: int | None
     include_unknown: bool
     gender: str
@@ -169,10 +192,26 @@ class RecordQuery:
     page_size: int
     sort: str
 
+    @property
+    def start_date(self) -> date:
+        return self.start_at.date()
+
+    @property
+    def end_date(self) -> date:
+        return (self.end_at - timedelta(microseconds=1)).date()
+
+    @property
+    def start_time(self) -> str:
+        return self.start_at.strftime("%Y-%m-%dT%H:%M")
+
+    @property
+    def end_time(self) -> str:
+        return (self.end_at - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M")
+
     @classmethod
     def from_query(cls, query: dict[str, list[str]], today: date | None = None) -> "RecordQuery":
         local_today = today or _china_today()
-        start_date, end_date = _date_range(query, local_today)
+        start_at, end_at = _time_range(query, local_today)
         raw_minimum = _single(query, "min_wealth_level")
         minimum = None if raw_minimum == "" else _parse_int(raw_minimum, 0, 0, 300)
         raw_minimum_friends = _single(query, "min_close_friend_count")
@@ -185,8 +224,8 @@ class RecordQuery:
         if gender not in {"all", "male", "female", "unknown"}:
             gender = "all"
         return cls(
-            start_date=start_date,
-            end_date=end_date,
+            start_at=start_at,
+            end_at=end_at,
             min_wealth_level=minimum,
             include_unknown=_single(query, "include_unknown", "true").lower() == "true",
             gender=gender,
@@ -207,10 +246,16 @@ def _build_record_filter(
     record_query: RecordQuery,
 ) -> tuple[str, list[Any], str]:
     hidden = load_settings(settings_path)
-    clauses = ["c.scan_date BETWEEN ? AND ?"]
+    clauses = [
+        "c.scan_date BETWEEN ? AND ?",
+        "datetime(c.scanned_at) >= datetime(?)",
+        "datetime(c.scanned_at) < datetime(?)",
+    ]
     parameters: list[Any] = [
         record_query.start_date.isoformat(),
         record_query.end_date.isoformat(),
+        record_query.start_at.isoformat(),
+        record_query.end_at.isoformat(),
     ]
 
     if record_query.min_wealth_level is not None:
@@ -321,6 +366,8 @@ def query_records(
         "page_size": record_query.page_size,
         "start_date": record_query.start_date.isoformat(),
         "end_date": record_query.end_date.isoformat(),
+        "start_time": record_query.start_time,
+        "end_time": record_query.end_time,
     }
 
 
@@ -574,10 +621,10 @@ function fieldValue(name) {
 }
 
 function rowMatches(row) {
-    const startDate = fieldValue("start_date");
-    const endDate = fieldValue("end_date");
-    const scanDate = row.dataset.scanDate;
-    if ((startDate && scanDate < startDate) || (endDate && scanDate > endDate)) return false;
+    const startTime = fieldValue("start_time");
+    const endTime = fieldValue("end_time");
+    const scanTime = row.dataset.scanTime;
+    if ((startTime && scanTime < startTime) || (endTime && scanTime > endTime)) return false;
 
     const gender = fieldValue("gender");
     if (gender !== "all" && row.dataset.gender !== gender) return false;
@@ -656,6 +703,19 @@ def _static_filter_gender(value: Any) -> str:
     return "unknown"
 
 
+def _record_query_summary(record_query: RecordQuery) -> str:
+    return (
+        f"{record_query.start_time.replace('T', ' ')} — "
+        f"{record_query.end_time.replace('T', ' ')}"
+    )
+
+
+def _record_query_filename_range(record_query: RecordQuery) -> str:
+    start = record_query.start_time.replace("T", "-").replace(":", "")
+    end = record_query.end_time.replace("T", "-").replace(":", "")
+    return f"{start}_{end}"
+
+
 def export_records_html(
     database_path: Path,
     settings_path: Path,
@@ -665,7 +725,7 @@ def export_records_html(
     table_rows: list[str] = []
     for record in rows:
         filter_values = {
-            "scan-date": str(record["scan_date"] or str(record["scanned_at"] or "")[:10]),
+            "scan-time": str(record["scanned_at"] or "")[:16],
             "wealth": "" if record["wealth_level"] is None else str(record["wealth_level"]),
             "gender": _static_filter_gender(record["gender"]),
             "friends": "" if record["close_friend_count"] is None else str(record["close_friend_count"]),
@@ -732,11 +792,7 @@ def export_records_html(
             + "</tr>"
         )
 
-    date_summary = (
-        record_query.start_date.isoformat()
-        if record_query.start_date == record_query.end_date
-        else f"{record_query.start_date.isoformat()} — {record_query.end_date.isoformat()}"
-    )
+    date_summary = _record_query_summary(record_query)
     exported_at = datetime.now(timezone.utc).astimezone(CHINA_TZ).strftime("%Y-%m-%d %H:%M:%S")
     table_content = "".join(table_rows)
     document = f"""<!doctype html>
@@ -761,8 +817,8 @@ def export_records_html(
 <time>导出于 {exported_at}</time>
 </section>
 <form id="static-filters" class="panel filters" aria-label="本地筛选条件">
-<div class="field"><label for="filter-start-date">开始日期</label><input id="filter-start-date" name="start_date" type="date" /></div>
-<div class="field"><label for="filter-end-date">结束日期</label><input id="filter-end-date" name="end_date" type="date" /></div>
+<div class="field"><label for="filter-start-time">开始时间</label><input id="filter-start-time" name="start_time" type="datetime-local" step="60" /></div>
+<div class="field"><label for="filter-end-time">结束时间</label><input id="filter-end-time" name="end_time" type="datetime-local" step="60" /></div>
 <div class="field"><label for="filter-min-wealth">财富等级大于</label><input id="filter-min-wealth" name="min_wealth" type="number" min="0" max="300" placeholder="不限" /></div>
 <label class="check-field"><input name="include_unknown" type="checkbox" checked />显示财富等级为 ??? 的记录</label>
 <div class="field"><label for="filter-gender">性别</label><select id="filter-gender" name="gender"><option value="all">不限</option><option value="male">男</option><option value="female">女</option><option value="unknown">未知</option></select></div>
@@ -888,7 +944,7 @@ class ContributionViewerHandler(BaseHTTPRequestHandler):
                     query,
                     columns,
                 )
-                filename = f"HelloFish-contributions-{query.start_date}-{query.end_date}.csv"
+                filename = f"HelloFish-contributions-{_record_query_filename_range(query)}.csv"
                 self._send_bytes(
                     HTTPStatus.OK,
                     payload,
@@ -904,7 +960,7 @@ class ContributionViewerHandler(BaseHTTPRequestHandler):
                     self.server.settings_path,
                     query,
                 )
-                filename = f"HelloFish-contributions-{query.start_date}-{query.end_date}.html"
+                filename = f"HelloFish-contributions-{_record_query_filename_range(query)}.html"
                 self._send_bytes(
                     HTTPStatus.OK,
                     payload,

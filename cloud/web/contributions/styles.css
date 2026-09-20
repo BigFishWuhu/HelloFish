@@ -137,6 +137,9 @@ textarea:focus {
     align-items: flex-end;
     gap: 8px;
 }
+.date-range .field {
+    min-width: 205px;
+}
 .date-range > span {
     padding-bottom: 10px;
     color: #789094;

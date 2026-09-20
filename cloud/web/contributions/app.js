@@ -3,8 +3,8 @@ const $ = (selector) => document.querySelector(selector);
 const controls = {
     dateMode: $("#date-mode"),
     recentDays: $("#recent-days"),
-    startDate: $("#start-date"),
-    endDate: $("#end-date"),
+    startDate: $("#start-time"),
+    endDate: $("#end-time"),
     minWealth: $("#min-wealth"),
     includeUnknown: $("#include-unknown"),
     gender: $("#gender"),
@@ -34,6 +34,17 @@ function localIsoDate(value = new Date()) {
     }).formatToParts(value);
     const values = Object.fromEntries(parts.map(({type, value: part}) => [type, part]));
     return `${values.year}-${values.month}-${values.day}`;
+}
+
+function localIsoMinute(value = new Date()) {
+    const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: "Asia/Shanghai",
+        hourCycle: "h23",
+        hour: "2-digit",
+        minute: "2-digit",
+    }).formatToParts(value);
+    const values = Object.fromEntries(parts.map(({type, value: part}) => [type, part]));
+    return `${localIsoDate(value)}T${values.hour}:${values.minute}`;
 }
 
 function restoreCopiedUsers() {
@@ -69,8 +80,8 @@ function rememberCopiedUser(userId) {
 
 function restoreFilters() {
     const today = localIsoDate();
-    controls.startDate.value = today;
-    controls.endDate.value = today;
+    controls.startDate.value = `${today}T00:00`;
+    controls.endDate.value = localIsoMinute();
     try {
         const saved = JSON.parse(localStorage.getItem(storageKey) || "{}");
         for (const [
@@ -79,7 +90,12 @@ function restoreFilters() {
         ] of Object.entries(controls)) {
             if (!(name in saved)) continue;
             if (control.type === "checkbox") control.checked = Boolean(saved[name]);
-            else control.value = String(saved[name]);
+            else {
+                const value = String(saved[name]);
+                if (control.type === "datetime-local" && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+                    control.value = `${value}T${name === "endDate" ? "23:59" : "00:00"}`;
+                } else control.value = value;
+            }
         }
     } catch (_) {
         localStorage.removeItem(storageKey);
@@ -268,8 +284,8 @@ function queryParams() {
     const params = new URLSearchParams({
         date_mode: controls.dateMode.value,
         days: controls.recentDays.value || "7",
-        start_date: controls.startDate.value,
-        end_date: controls.endDate.value,
+        start_time: controls.startDate.value,
+        end_time: controls.endDate.value,
         min_wealth_level: controls.minWealth.value,
         include_unknown: String(controls.includeUnknown.checked),
         gender: controls.gender.value,
@@ -393,7 +409,7 @@ async function loadRecords() {
         const pages = Math.max(1, Math.ceil(state.total / state.pageSize));
         $("#record-total").textContent = String(state.total);
         $("#date-summary").textContent =
-            data.start_date === data.end_date ? data.start_date : `${data.start_date} — ${data.end_date}`;
+            `${data.start_time.replace("T", " ")} — ${data.end_time.replace("T", " ")}`;
         $("#page-summary").textContent = `第 ${state.page} / ${pages} 页`;
         $("#previous-page").disabled = state.page <= 1;
         $("#next-page").disabled = state.page >= pages;

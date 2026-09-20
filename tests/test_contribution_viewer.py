@@ -131,9 +131,17 @@ class ContributionViewerTest(unittest.TestCase):
         self.assertIsNone(_account_assessment(None, 100))
 
     def test_cloud_page_uses_china_timezone_for_default_date(self) -> None:
-        app_path = Path(__file__).resolve().parents[1] / "cloud" / "web" / "contributions" / "app.js"
+        app_path = (
+            Path(__file__).resolve().parents[1]
+            / "cloud"
+            / "web"
+            / "contributions"
+            / "app.js"
+        )
         app = app_path.read_text(encoding="utf-8")
         self.assertIn('timeZone: "Asia/Shanghai"', app)
+        self.assertIn("start_time: controls.startDate.value", app)
+        self.assertIn("end_time: controls.endDate.value", app)
 
     def test_default_today_uses_china_time_when_host_is_still_in_utc_yesterday(self) -> None:
         with patch.object(
@@ -214,6 +222,75 @@ class ContributionViewerTest(unittest.TestCase):
         )
         result = query_records(self.database_path, self.settings_path, query)
         self.assertEqual([record["user_id"] for record in result["records"]], ["u3"])
+
+    def test_custom_time_range_filters_to_inclusive_minutes(self) -> None:
+        records = [
+            ("u-before", "2026-09-14T09:59:59+08:00"),
+            ("u-in-minute", "2026-09-14T10:00:59+08:00"),
+            ("u-after", "2026-09-14T10:01:00+08:00"),
+        ]
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            for index, (user_id, scanned_at) in enumerate(records, start=1):
+                VoiceHallDatabase._upsert_contribution(
+                    connection,
+                    {
+                        "room_id": f"minute-{index}",
+                        "rank": index,
+                        "user_id": user_id,
+                        "username": user_id,
+                        "scanned_at": scanned_at,
+                    },
+                )
+
+        query = RecordQuery.from_query(
+            {
+                "date_mode": ["custom"],
+                "start_time": ["2026-09-14T10:00"],
+                "end_time": ["2026-09-14T10:00"],
+            },
+            today=date(2026, 9, 14),
+        )
+        result = query_records(self.database_path, self.settings_path, query)
+
+        self.assertEqual(
+            [record["user_id"] for record in result["records"]],
+            ["u-in-minute", "u1"],
+        )
+        self.assertEqual(result["start_time"], "2026-09-14T10:00")
+        self.assertEqual(result["end_time"], "2026-09-14T10:00")
+
+        payload = export_records_csv(
+            self.database_path,
+            self.settings_path,
+            query,
+            ["user_id"],
+        )
+        rows = list(csv.reader(io.StringIO(payload.decode("utf-8-sig"))))
+        self.assertEqual(rows, [["用户 ID"], ["u-in-minute"], ["u1"]])
+
+        document = export_records_html(
+            self.database_path,
+            self.settings_path,
+            query,
+        ).decode("utf-8")
+        self.assertIn("u-in-minute", document)
+        self.assertNotIn("u-before", document)
+        self.assertNotIn("u-after", document)
+
+    def test_legacy_custom_dates_still_cover_the_full_end_day(self) -> None:
+        query = RecordQuery.from_query(
+            {
+                "date_mode": ["custom"],
+                "start_date": ["2026-09-13"],
+                "end_date": ["2026-09-14"],
+            },
+            today=date(2026, 9, 14),
+        )
+        result = query_records(self.database_path, self.settings_path, query)
+
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(result["start_time"], "2026-09-13T00:00")
+        self.assertEqual(result["end_time"], "2026-09-14T23:59")
 
     def test_csv_export_uses_filters_and_selected_columns(self) -> None:
         query = RecordQuery.from_query(
@@ -337,6 +414,9 @@ class ContributionViewerTest(unittest.TestCase):
         self.assertIn('data-user-id="u2"', document)
         self.assertIn('<tbody id="records-body">', document)
         self.assertIn('id="static-filters"', document)
+        self.assertIn('name="start_time" type="datetime-local"', document)
+        self.assertIn('name="end_time" type="datetime-local"', document)
+        self.assertIn('data-scan-time="2026-09-14T10:00"', document)
         self.assertIn('name="gender"', document)
         self.assertIn('data-gender="male"', document)
         self.assertIn('data-gender="female"', document)
