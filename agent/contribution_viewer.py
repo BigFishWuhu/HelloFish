@@ -831,12 +831,82 @@ def _wealth_password_content_disposition(extension: str) -> str:
     )
 
 
+def _html_user_button(record: sqlite3.Row, *, show_name: bool) -> str:
+    user_id = _html_text(record["user_id"], "")
+    label = _html_text(record["username"] if show_name else record["user_id"])
+    suffix = f'<small>ID {user_id}</small>' if show_name else ""
+    return (
+        f'<button type="button" class="identity user-copy" data-user-id="{user_id}" '
+        f'title="点击复制用户 ID" aria-label="点击复制用户 ID {user_id}">'
+        f"{label}{suffix}</button>"
+    )
+
+
+def _html_export_cell(
+    record: sqlite3.Row,
+    column: str,
+    assessment_markup: str,
+) -> str:
+    if column == "scanned_at":
+        return _format_html_scan_time(record["scanned_at"])
+    if column == "scan_date":
+        return _html_text(record["scan_date"])
+    if column == "room_name":
+        return _html_text(record["room_name"])
+    if column == "room_id":
+        return _html_text(record["room_id"])
+    if column == "contribution_gap":
+        return _format_html_yuan(record["contribution_gap"])
+    if column == "estimated_contribution_value":
+        return _format_html_yuan(record["estimated_contribution_value"])
+    if column == "username":
+        return _html_user_button(record, show_name=True)
+    if column == "user_id":
+        return _html_user_button(record, show_name=False)
+    if column in {"wealth_min_yuan", "charm_min_yuan"}:
+        source = "wealth_min_contribution" if column == "wealth_min_yuan" else "charm_min_value"
+        return _format_html_yuan(record[source])
+    if column == "account_assessment":
+        return assessment_markup
+    if column in {"wealth_level", "charm_level"}:
+        return _html_text(record[column], "???")
+    if column in {"wealth_min_contribution", "charm_min_value"}:
+        return _html_text(record[column], "???")
+    return _html_text(record[column])
+
+
 def export_records_html(
     database_path: Path,
     settings_path: Path,
     record_query: RecordQuery,
+    columns: list[str] | None = None,
 ) -> bytes:
     rows = _query_export_records(database_path, settings_path, record_query)
+    # Keep the no-argument export compatible with previously generated files;
+    # the UI passes an explicit list whenever the user chooses columns.
+    if columns is None:
+        columns = [
+            "scanned_at",
+            "room_name",
+            "rank",
+            "contribution_gap",
+            "estimated_contribution_value",
+            "username",
+            "gender",
+            "ip",
+            "close_friend_count",
+            "wealth_level",
+            "charm_level",
+            "account_assessment",
+        ]
+        legacy_layout = True
+    else:
+        if not columns:
+            raise ValueError("至少选择一个有效的导出列")
+        columns = [column for column in columns if column in EXPORT_COLUMNS]
+        if not columns:
+            raise ValueError("至少选择一个有效的导出列")
+        legacy_layout = False
     table_rows: list[str] = []
     for record in rows:
         filter_values = {
@@ -852,16 +922,6 @@ def export_records_html(
             f'data-{name}="{html.escape(value, quote=True)}"'
             for name, value in filter_values.items()
         )
-        room = (
-            f'<div class="identity">{_html_text(record["room_name"])}'
-            f'<small>ID {_html_text(record["room_id"])}</small></div>'
-        )
-        user_id = _html_text(record["user_id"], "")
-        user = (
-            f'<button type="button" class="identity user-copy" data-user-id="{user_id}" '
-            f'title="点击复制用户 ID" aria-label="点击复制用户 ID {user_id}">'
-            f'{_html_text(record["username"])}<small>ID {user_id}</small></button>'
-        )
         assessment = _account_assessment(
             record["wealth_min_contribution"],
             record["charm_min_value"],
@@ -874,34 +934,47 @@ def export_records_html(
             if assessment
             else "—"
         )
-        cells = (
-            _format_html_scan_time(record["scanned_at"]),
-            room,
-            _html_text(record["rank"]),
-            _format_html_yuan(record["contribution_gap"]),
-            _format_html_yuan(record["estimated_contribution_value"]),
-            user,
-            _html_text(record["gender"]),
-            _html_text(record["ip"]),
-            _html_text(record["close_friend_count"]),
-            (
-                f'{_html_text(record["wealth_level"], "???")}'
-                f'<small>（{_format_html_yuan(record["wealth_min_contribution"])}）</small>'
-            ),
-            (
-                f'{_html_text(record["charm_level"], "???")}'
-                f'<small>（{_format_html_yuan(record["charm_min_value"])}）</small>'
-            ),
-            assessment_markup,
-        )
+        if legacy_layout:
+            user_id = _html_text(record["user_id"], "")
+            cells = (
+                _format_html_scan_time(record["scanned_at"]),
+                f'<div class="identity">{_html_text(record["room_name"])}'
+                f'<small>ID {_html_text(record["room_id"])}</small></div>',
+                _html_text(record["rank"]),
+                _format_html_yuan(record["contribution_gap"]),
+                _format_html_yuan(record["estimated_contribution_value"]),
+                f'<button type="button" class="identity user-copy" data-user-id="{user_id}" '
+                f'title="点击复制用户 ID" aria-label="点击复制用户 ID {user_id}">'
+                f'{_html_text(record["username"])}<small>ID {user_id}</small></button>',
+                _html_text(record["gender"]),
+                _html_text(record["ip"]),
+                _html_text(record["close_friend_count"]),
+                (
+                    f'{_html_text(record["wealth_level"], "???")}'
+                    f'<small>（{_format_html_yuan(record["wealth_min_contribution"])}）</small>'
+                ),
+                (
+                    f'{_html_text(record["charm_level"], "???")}'
+                    f'<small>（{_format_html_yuan(record["charm_min_value"])}）</small>'
+                ),
+                assessment_markup,
+            )
+            cell_classes = {9: "wealth", 10: "charm"}
+        else:
+            cells = tuple(
+                _html_export_cell(record, column, assessment_markup)
+                for column in columns
+            )
+            cell_classes = {
+                index: "wealth" if column in {"wealth_level", "wealth_min_contribution", "wealth_min_yuan"}
+                else "charm" if column in {"charm_level", "charm_min_value", "charm_min_yuan"}
+                else ""
+                for index, column in enumerate(columns)
+            }
         table_rows.append(
             f"<tr {filter_attributes}>"
             + "".join(
-                f'<td class="wealth">{value}</td>'
-                if index == 9
-                else f'<td class="charm">{value}</td>'
-                if index == 10
-                else f"<td>{value}</td>"
+                f'<td class="{cell_classes.get(index, "")}">{value}</td>'
                 for index, value in enumerate(cells)
             )
             + "</tr>"
@@ -946,7 +1019,7 @@ def export_records_html(
 <section class="panel">
 <div class="table-scroll">
 <table>
-<thead><tr><th>日期 / 时间</th><th>厅</th><th>排名</th><th>距前一名金额</th><th>推测金额</th><th>用户名</th><th>性别</th><th>IP 属地</th><th>挚友</th><th>财富等级</th><th>魅力等级</th><th>账号判断</th></tr></thead>
+<thead><tr>{''.join(f'<th>{_html_text(EXPORT_COLUMNS[column])}</th>' for column in columns) if not legacy_layout else '<th>日期 / 时间</th><th>厅</th><th>排名</th><th>距前一名金额</th><th>推测金额</th><th>用户名</th><th>性别</th><th>IP 属地</th><th>挚友</th><th>财富等级</th><th>魅力等级</th><th>账号判断</th>'}</tr></thead>
 <tbody id="records-body">{table_content}</tbody>
 </table>
 <div id="empty-state" class="empty{' hidden' if table_rows else ''}">当前条件下没有贡献记录</div>
@@ -1070,10 +1143,12 @@ class ContributionViewerHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/export.html":
                 raw_query = parse_qs(parsed.query, keep_blank_values=True)
                 query = RecordQuery.from_query(raw_query)
+                columns = parse_export_columns(raw_query) if "columns" in raw_query else None
                 payload = export_records_html(
                     self.server.database_path,
                     self.server.settings_path,
                     query,
+                    columns,
                 )
                 self._send_bytes(
                     HTTPStatus.OK,

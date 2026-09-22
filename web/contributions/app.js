@@ -348,10 +348,19 @@ function startExport() {
 }
 
 function startHtmlExport() {
+    const columns = exportColumnControls()
+        .filter((control) => control.checked)
+        .map((control) => control.dataset.exportColumn);
+    if (columns.length === 0) {
+        $("#export-status").textContent = "请至少选择一列。";
+        return;
+    }
     persistFilters();
+    localStorage.setItem(exportStorageKey, JSON.stringify(columns));
     const params = new URLSearchParams(queryParams());
     params.delete("page");
     params.delete("page_size");
+    params.set("columns", columns.join(","));
     const download = document.createElement("a");
     download.href = `/api/export.html?${params.toString()}`;
     download.hidden = true;
@@ -359,7 +368,7 @@ function startHtmlExport() {
     download.click();
     download.remove();
     $("#export-dialog").close();
-    showToast("正在导出静态 HTML，筛选条件已保留");
+    showToast(`正在导出 ${columns.length} 列，筛选条件已保留`);
 }
 
 async function loadRecords() {

@@ -350,10 +350,19 @@ function startExport() {
 
 async function startHtmlExport() {
     const button = $("#start-html-export");
+    const columns = exportColumnControls()
+        .filter((control) => control.checked)
+        .map((control) => control.dataset.exportColumn);
+    if (columns.length === 0) {
+        $("#export-status").textContent = "请至少选择一列。";
+        return;
+    }
     persistFilters();
+    localStorage.setItem(exportStorageKey, JSON.stringify(columns));
     const params = new URLSearchParams(queryParams());
     params.delete("page");
     params.delete("page_size");
+    params.set("columns", columns.join(","));
     button.disabled = true;
     $("#export-status").textContent = "正在生成静态 HTML…";
     try {

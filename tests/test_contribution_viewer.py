@@ -433,6 +433,22 @@ class ContributionViewerTest(unittest.TestCase):
         self.assertNotIn("<script>alert(1)</script>", document)
         self.assertNotIn("上一页", document)
 
+    def test_html_export_uses_selected_columns(self) -> None:
+        query = RecordQuery.from_query({}, today=date(2026, 9, 14))
+
+        document = export_records_html(
+            self.database_path,
+            self.settings_path,
+            query,
+            ["username", "wealth_min_yuan"],
+        ).decode("utf-8")
+
+        self.assertIn("<th>用户名</th><th>等级最低金额（元）</th>", document)
+        self.assertNotIn("<th>日期 / 时间</th>", document)
+        self.assertNotIn("<th>财富等级</th>", document)
+        self.assertIn('data-user-id="u1"', document)
+        self.assertIn("120 元", document)
+
     def test_html_export_endpoint_downloads_a_standalone_file(self) -> None:
         web_root = self.root / "html-export-web"
         web_root.mkdir()
@@ -459,6 +475,33 @@ class ContributionViewerTest(unittest.TestCase):
                     response.headers["Content-Security-Policy"],
                 )
                 self.assertIn("贡献记录", response.read().decode("utf-8"))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_html_export_endpoint_accepts_selected_columns(self) -> None:
+        web_root = self.root / "html-export-selected-web"
+        web_root.mkdir()
+        web_root.joinpath("index.html").write_text("viewer", encoding="utf-8")
+        server = ContributionViewerServer(
+            ("127.0.0.1", 0),
+            self.database_path,
+            self.settings_path,
+            web_root,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        url = (
+            f"http://127.0.0.1:{server.server_port}/api/export.html"
+            "?date_mode=custom&start_date=2026-09-14&end_date=2026-09-14"
+            "&columns=username,room_id"
+        )
+        try:
+            with urlopen(url, timeout=2) as response:  # noqa: S310
+                document = response.read().decode("utf-8")
+                self.assertIn("<th>用户名</th><th>厅 ID</th>", document)
+                self.assertNotIn("<th>日期 / 时间</th>", document)
         finally:
             server.shutdown()
             server.server_close()

@@ -22,6 +22,7 @@ from voice_hall import (  # noqa: E402
     _ensure_shell_api_types,
     _estimate_contribution_values,
     _extract_hall_id,
+    _entertainment_nav_selected,
     _find_entertainment_nav_point,
     _find_contribution_row_data,
     _find_contribution_targets,
@@ -1681,6 +1682,39 @@ class HallListRecognitionTest(unittest.TestCase):
 
         self.assertTrue(returned)
         self.assertEqual(controller.clicks, [(365, 1220)])
+
+    def test_home_categories_do_not_override_unselected_entertainment_tab(self) -> None:
+        controller = FakeController()
+        self.scanner.controller = controller
+        items = [
+            ocr("女神", (48, 61, 64, 38)),
+            ocr("男神", (162, 61, 64, 38)),
+            ocr("120323", (231, 283, 115, 30)),
+            ocr("娱乐", (243, 1234, 52, 31)),
+        ]
+        home = np.full((1280, 720, 3), 38, dtype=np.uint8)
+        home[1236:1261, 249:290] = 110
+        hall_list = home.copy()
+        hall_list[1236:1261, 249:290] = 245
+
+        self.assertTrue(self.scanner._is_hall_list(items))
+        self.assertFalse(_entertainment_nav_selected(home, items))
+        self.assertTrue(_entertainment_nav_selected(hall_list, items))
+        with (
+            patch.object(
+                self.scanner,
+                "_capture_ocr",
+                side_effect=[(home, items), (hall_list, items)],
+            ),
+            patch.object(self.scanner, "_dump_ui_hierarchy", return_value=""),
+            patch.object(self.scanner, "_sleep"),
+        ):
+            returned = self.scanner._return_to_hall_list(
+                SimpleNamespace(), max_attempts=2
+            )
+
+        self.assertTrue(returned)
+        self.assertEqual(controller.clicks, [(269, 1249)])
 
     def test_back_navigation_failure_saves_screen_hierarchy_and_ocr(self) -> None:
         self.scanner.controller = FakeController()

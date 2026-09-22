@@ -81,6 +81,8 @@ HALL_CATEGORY_X_RANGES = {
 }
 HALL_CATEGORY_Y_RANGE = (35, 115)
 HALL_NAV_MIN_Y = 1160
+HALL_NAV_SELECTED_WHITE_MIN = 210
+HALL_NAV_SELECTED_PIXEL_RATIO = 0.05
 HALL_CARD_X_RANGE = (180, 520)
 HALL_CARD_Y_RANGE = (150, 1180)
 HALL_LIST_REFRESH_COUNT = 2
@@ -641,6 +643,30 @@ def _find_entertainment_nav_point(
     return None
 
 
+def _entertainment_nav_selected(
+    image: Any,
+    items: list[Any],
+    hierarchy: str = "",
+) -> bool | None:
+    """Read the highlighted bottom label; None means no usable visual evidence."""
+    point = _find_entertainment_nav_point(items, hierarchy)
+    if point is None or image is None:
+        return None
+    pixels = np.asarray(image)
+    if pixels.ndim != 3 or pixels.shape[2] < 3 or pixels.dtype != np.uint8:
+        return None
+    height, width = pixels.shape[:2]
+    x, y = point
+    if not (0 <= x < width and HALL_NAV_MIN_Y <= y < height):
+        return None
+    # Keep the icon and dark footer background out of the text comparison.
+    label = pixels[max(0, y - 18):min(height, y + 19), max(0, x - 42):min(width, x + 43), :3]
+    if label.size == 0:
+        return None
+    white_ratio = np.mean(np.min(label, axis=2) >= HALL_NAV_SELECTED_WHITE_MIN)
+    return bool(white_ratio >= HALL_NAV_SELECTED_PIXEL_RATIO)
+
+
 def _is_resume_room_prompt(items: list[Any], hierarchy: str) -> bool:
     texts = [_result_text(item) for item in items]
     joined_text = " ".join(texts)
@@ -1066,10 +1092,16 @@ class ContributionScanner(CustomAction):
                 break
 
             image, items = self._capture_ocr(context)
-            if not self._is_hall_list(items):
+            if (
+                not self._is_hall_list(items)
+                or _entertainment_nav_selected(image, items) is False
+            ):
                 if not self._return_to_hall_list(context, max_attempts=3):
                     break
                 image, items = self._capture_ocr(context)
+                if _entertainment_nav_selected(image, items) is False:
+                    self._log("娱乐标签仍未选中，停止当前页找厅")
+                    break
 
             hall_candidates = self._find_hall_candidates(items)
             signature = tuple(str(candidate["hall_id"]) for candidate in hall_candidates)
@@ -2203,7 +2235,7 @@ class ContributionScanner(CustomAction):
     def _return_to_hall_list(self, context: Context, max_attempts: int) -> bool:
         for attempt in range(max_attempts):
             self._check_stopping(context)
-            _, items = self._capture_ocr(context)
+            image, items = self._capture_ocr(context)
             hierarchy = self._dump_ui_hierarchy()
             if _is_resume_room_prompt(items, hierarchy):
                 cancel_point = _find_resume_room_cancel_point(items, hierarchy)
@@ -2219,7 +2251,10 @@ class ContributionScanner(CustomAction):
                 continue
             hall_list_by_ocr = self._is_hall_list(items)
             hall_list_by_hierarchy = _is_hall_list_hierarchy(hierarchy)
-            if hall_list_by_ocr or hall_list_by_hierarchy:
+            entertainment_selected = _entertainment_nav_selected(
+                image, items, hierarchy
+            )
+            if (hall_list_by_ocr or hall_list_by_hierarchy) and entertainment_selected is not False:
                 if hall_list_by_hierarchy and not hall_list_by_ocr:
                     self._log("无障碍确认已返回厅列表")
                 return True
@@ -2269,7 +2304,10 @@ class ContributionScanner(CustomAction):
 
         image, items = self._capture_ocr(context)
         hierarchy = self._dump_ui_hierarchy()
-        restored = self._is_hall_list(items) or _is_hall_list_hierarchy(hierarchy)
+        restored = (
+            (self._is_hall_list(items) or _is_hall_list_hierarchy(hierarchy))
+            and _entertainment_nav_selected(image, items, hierarchy) is not False
+        )
         if not restored:
             self._save_hall_list_recovery_failure(
                 image,
