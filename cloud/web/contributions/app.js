@@ -374,9 +374,12 @@ async function startHtmlExport() {
         const blobUrl = URL.createObjectURL(await response.blob());
         const download = document.createElement("a");
         const disposition = response.headers.get("Content-Disposition") || "";
-        const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1];
+        const encodedFilename = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+        const filename = encodedFilename
+            ? decodeURIComponent(encodedFilename)
+            : disposition.match(/filename="?([^";]+)"?/i)?.[1];
         download.href = blobUrl;
-        download.download = filename || "HelloFish-contributions.html";
+        download.download = filename || `${new Date().toISOString().slice(0, 10)}-财富密码.html`;
         download.hidden = true;
         document.body.append(download);
         download.click();

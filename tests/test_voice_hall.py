@@ -22,14 +22,19 @@ from voice_hall import (  # noqa: E402
     _ensure_shell_api_types,
     _estimate_contribution_values,
     _extract_hall_id,
+    _find_entertainment_nav_point,
     _find_contribution_row_data,
     _find_contribution_targets,
     _find_profile_copy_target,
     _normalize_gender_selection,
+    _normalize_room_name,
     _normalize_setting_list,
+    _room_name_matches_skip,
     _selected_record_genders,
     _should_record_gender,
     _is_contribution_hierarchy,
+    _is_locked_room_prompt,
+    _find_locked_room_cancel_point,
     _should_save_level_samples,
     _was_scanned_on,
 )
@@ -537,6 +542,83 @@ class HallListRecognitionTest(unittest.TestCase):
 
         self.assertEqual(self.scanner._copy_profile_id(), "23342974")
         self.assertEqual(controller.clicks, [(123, 641)])
+
+    def test_profile_id_retry_recovers_when_ocr_is_delayed(self) -> None:
+        delayed_items = [ocr("ID:23342974", (76, 628, 115, 28))]
+        self.scanner.controller = FakeController()
+
+        with (
+            patch.object(self.scanner, "_copy_profile_id", return_value=None),
+            patch.object(
+                self.scanner,
+                "_capture_ocr",
+                return_value=(None, delayed_items),
+            ) as capture,
+            patch.object(self.scanner, "_dump_ui_hierarchy", return_value=""),
+            patch.object(self.scanner, "_sleep"),
+        ):
+            user_id, image, items = self.scanner._read_profile_id_with_retry(
+                SimpleNamespace(),
+                None,
+                [ocr("ID", (76, 628, 30, 28))],
+                from_leaderboard=True,
+            )
+
+        self.assertEqual(user_id, "23342974")
+        self.assertIsNone(image)
+        self.assertIs(items, delayed_items)
+        capture.assert_called_once()
+
+    def test_profile_id_retry_recovers_when_hierarchy_is_delayed(self) -> None:
+        hierarchy = """<?xml version='1.0'?>
+        <hierarchy>
+          <node resource-id="com.sybl.voiceroom:id/ll_copy"
+                text="" bounds="[44,628][203,655]" />
+          <node resource-id="com.sybl.voiceroom:id/tv_user_code"
+                text="23342974" bounds="[77,628][165,655]" />
+        </hierarchy>"""
+        controller = FakeController()
+        self.scanner.controller = controller
+
+        with (
+            patch.object(self.scanner, "_copy_profile_id", return_value=None),
+            patch.object(self.scanner, "_capture_ocr", return_value=(None, [])),
+            patch.object(self.scanner, "_dump_ui_hierarchy", return_value=hierarchy),
+            patch.object(self.scanner, "_sleep"),
+        ):
+            user_id, _, _ = self.scanner._read_profile_id_with_retry(
+                SimpleNamespace(),
+                None,
+                [ocr("ID", (76, 628, 30, 28))],
+                from_leaderboard=True,
+            )
+
+        self.assertEqual(user_id, "23342974")
+        self.assertEqual(controller.clicks, [(123, 641)])
+
+    def test_profile_id_retry_stops_on_contribution_board(self) -> None:
+        controller = FakeController()
+        self.scanner.controller = controller
+        leaderboard = [ocr("房间贡献榜", (330, 55, 150, 35))]
+
+        with (
+            patch.object(self.scanner, "_copy_profile_id", return_value=None),
+            patch.object(self.scanner, "_capture_ocr") as capture,
+            patch.object(self.scanner, "_dump_ui_hierarchy", return_value=""),
+            patch.object(self.scanner, "_sleep") as sleep,
+        ):
+            user_id, _, items = self.scanner._read_profile_id_with_retry(
+                SimpleNamespace(),
+                None,
+                leaderboard,
+                from_leaderboard=True,
+            )
+
+        self.assertIsNone(user_id)
+        self.assertIs(items, leaderboard)
+        capture.assert_not_called()
+        sleep.assert_not_called()
+        self.assertEqual(controller.clicks, [])
 
     def test_registers_missing_shell_api_types(self) -> None:
         framework = FakeFramework()
@@ -1570,6 +1652,149 @@ class HallListRecognitionTest(unittest.TestCase):
         self.assertTrue(returned)
         self.assertEqual(controller.clicks, [])
 
+    def test_back_navigation_clicks_entertainment_on_app_home(self) -> None:
+        controller = FakeController()
+        self.scanner.controller = controller
+        home_items = [
+            ocr("首页", (30, 80, 70, 32)),
+            ocr("娱乐", (330, 1200, 70, 40)),
+        ]
+        hall_list_items = [
+            ocr("女神", (48, 61, 64, 38)),
+            ocr("男神", (162, 61, 64, 38)),
+            ocr("聊天室", (40, 1200, 100, 30)),
+        ]
+
+        with (
+            patch.object(
+                self.scanner,
+                "_capture_ocr",
+                side_effect=[(None, home_items), (None, hall_list_items)],
+            ),
+            patch.object(self.scanner, "_dump_ui_hierarchy", return_value=""),
+            patch.object(self.scanner, "_sleep"),
+        ):
+            returned = self.scanner._return_to_hall_list(
+                SimpleNamespace(),
+                max_attempts=2,
+            )
+
+        self.assertTrue(returned)
+        self.assertEqual(controller.clicks, [(365, 1220)])
+
+    def test_back_navigation_failure_saves_screen_hierarchy_and_ocr(self) -> None:
+        self.scanner.controller = FakeController()
+        image = np.zeros((8, 8, 3), dtype=np.uint8)
+        items = [ocr("房间贡献榜", (330, 55, 150, 35))]
+        hierarchy = "<hierarchy><node text=\"房间贡献榜\" /></hierarchy>"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            failure_dir = Path(temp_dir) / "hall_list_recovery"
+            with (
+                patch("voice_hall.DEFAULT_HALL_LIST_FAILURE_DIR", failure_dir),
+                patch.object(self.scanner, "_capture_ocr", return_value=(image, items)),
+                patch.object(self.scanner, "_dump_ui_hierarchy", return_value=hierarchy),
+                patch.object(self.scanner, "_sleep"),
+                patch.object(self.scanner, "_log"),
+            ):
+                returned = self.scanner._return_to_hall_list(
+                    SimpleNamespace(),
+                    max_attempts=1,
+                )
+
+            self.assertFalse(returned)
+            self.assertTrue(list(failure_dir.glob("*.png")))
+            self.assertTrue(list(failure_dir.glob("*.xml")))
+            evidence_files = list(failure_dir.glob("*.json"))
+            self.assertEqual(len(evidence_files), 1)
+            evidence = json.loads(evidence_files[0].read_text(encoding="utf-8"))
+            self.assertEqual(evidence["attempts"], 1)
+            self.assertEqual(evidence["ocr"][0]["text"], "房间贡献榜")
+
+    def test_back_navigation_cancels_resume_prompt_before_entertainment(self) -> None:
+        controller = FakeController()
+        self.scanner.controller = controller
+        prompt_items = [
+            ocr("检测到双鱼部落未正常退出，是否重新进入之前的房间?", (111, 577, 489, 32)),
+            ocr("取消", (195, 716, 69, 41)),
+            ocr("3261在玩", (333, 817, 113, 24)),
+            ocr("娱乐", (243, 1234, 52, 31)),
+        ]
+        home_items = [
+            ocr("热门房间", (26, 946, 142, 43)),
+            ocr("3261在玩", (333, 817, 113, 24)),
+            ocr("娱乐", (243, 1234, 52, 31)),
+        ]
+        hall_list_items = [
+            ocr("女神", (48, 61, 64, 38)),
+            ocr("男神", (162, 61, 64, 38)),
+            ocr("聊天室", (40, 1200, 100, 30)),
+        ]
+
+        self.assertFalse(self.scanner._is_hall_list(home_items))
+        with (
+            patch.object(
+                self.scanner,
+                "_capture_ocr",
+                side_effect=[
+                    (None, prompt_items),
+                    (None, home_items),
+                    (None, hall_list_items),
+                ],
+            ),
+            patch.object(self.scanner, "_dump_ui_hierarchy", return_value=""),
+            patch.object(self.scanner, "_sleep"),
+        ):
+            returned = self.scanner._return_to_hall_list(
+                SimpleNamespace(),
+                max_attempts=3,
+            )
+
+        self.assertTrue(returned)
+        self.assertEqual(controller.clicks, [(229, 736), (269, 1249)])
+
+    def test_locked_room_prompt_is_dismissed_and_hall_is_skipped(self) -> None:
+        controller = FakeController()
+        self.scanner.controller = controller
+        locked_items = [ocr("请输入房间密码", (227, 451, 266, 52))]
+        locked_hierarchy = """<?xml version='1.0'?>
+        <hierarchy>
+          <node resource-id="com.sybl.voiceroom:id/et_pwd" text=""
+                bounds="[0,585][720,683]" />
+          <node resource-id="com.sybl.voiceroom:id/iv_cancel" text=""
+                bounds="[577,399][646,468]" />
+        </hierarchy>"""
+
+        self.assertTrue(_is_locked_room_prompt(locked_items, ""))
+        self.assertTrue(
+            _is_locked_room_prompt([], locked_hierarchy)
+        )
+        self.assertEqual(
+            _find_locked_room_cancel_point([], locked_hierarchy),
+            (611, 433),
+        )
+        with (
+            patch.object(self.scanner, "_capture_ocr", return_value=(None, locked_items)),
+            patch.object(self.scanner, "_dump_ui_hierarchy", return_value=locked_hierarchy),
+            patch.object(self.scanner, "_sleep"),
+            patch.object(self.scanner, "_log"),
+        ):
+            opened = self.scanner._open_hall(SimpleNamespace(), 300, 0)
+
+        self.assertFalse(opened)
+        self.assertEqual(controller.clicks, [(360, 300), (611, 433)])
+
+    def test_entertainment_nav_point_uses_hierarchy_when_ocr_is_missing(self) -> None:
+        hierarchy = """<?xml version='1.0'?>
+        <hierarchy>
+          <node text="娱乐" bounds="[320,1200][400,1240]" />
+        </hierarchy>"""
+
+        self.assertEqual(
+            _find_entertainment_nav_point([], hierarchy),
+            (360, 1220),
+        )
+
     def test_contribution_scan_skips_unopenable_mystery_user(self) -> None:
         controller = FakeController()
         self.scanner.controller = controller
@@ -1759,6 +1984,12 @@ class HallListRecognitionTest(unittest.TestCase):
             100,
         )
         scan_params = pipeline["VoiceHallScanStart"]["custom_action_param"]
+        self.assertEqual(scan_params["skip_room_names"], "")
+        skip_rooms = interface["option"]["ScanGenderFilter"]
+        self.assertEqual(
+            [item["name"] for item in skip_rooms["inputs"]],
+            ["skip_room_ids", "skip_room_names"],
+        )
         self.assertEqual(
             {
                 name: scan_params[name]
@@ -1806,10 +2037,8 @@ class HallListRecognitionTest(unittest.TestCase):
             ["custom_action"],
             "scan_voice_hall_contributions_skip_scanned",
         )
-        self.assertIn(
-            "[查看贡献记录](http://127.0.0.1:8765/)",
-            scan_task["description"],
-        )
+        self.assertIn("随机可用端口", scan_task["description"])
+        self.assertNotIn("http://127.0.0.1:", scan_task["description"])
         self.assertNotIn(
             "OpenContributionViewer",
             {task["entry"] for task in interface["task"]},
@@ -1833,6 +2062,14 @@ class HallListRecognitionTest(unittest.TestCase):
             ),
             {"男", "未知"},
         )
+
+    def test_hall_name_skip_uses_normalized_fuzzy_matching(self) -> None:
+        self.assertEqual(_normalize_room_name(" 1010-红人馆! "), "1010红人馆")
+        self.assertTrue(_room_name_matches_skip("1010红人馆", {"红馆"}))
+        self.assertTrue(_room_name_matches_skip("星光厅（推荐）", {"星光厅"}))
+        self.assertTrue(_room_name_matches_skip("HaiFeng Hall", {"haifeng"}))
+        self.assertFalse(_room_name_matches_skip("海风厅", {"星光"}))
+        self.assertFalse(_room_name_matches_skip("一厅", {"一"}))
 
     def test_run_honors_false_string_gender_flags(self) -> None:
         context = SimpleNamespace(
@@ -2011,6 +2248,58 @@ class HallListRecognitionTest(unittest.TestCase):
             self.assertEqual(scan.call_args.kwargs["room_id"], "12345")
             self.assertEqual(scan.call_args.kwargs["room_name"], "12345")
             self.assertEqual(scan.call_args.kwargs["max_users"], 12)
+
+    def test_regular_scan_skips_hall_by_fuzzy_name_before_entering(self) -> None:
+        controller = FakeController()
+        context = SimpleNamespace(
+            tasker=SimpleNamespace(controller=controller, stopping=False)
+        )
+        candidate = {"hall_id": "7658", "name": "1010红人馆", "card_y": 300}
+        hall_list_items = [ocr("聊天室", (20, 1180, 100, 30))]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = Path(temp_dir) / "voice_hall.sqlite3"
+            state_path = Path(temp_dir) / "state.json"
+            argv = SimpleNamespace(
+                custom_action_param=json.dumps(
+                    {
+                        "database": str(database_path),
+                        "state_file": str(state_path),
+                        "max_hall_pages": 1,
+                        "skip_room_names": "红馆",
+                        "action_delay": 0,
+                    }
+                )
+            )
+            with (
+                patch.object(self.scanner, "_ensure_target_app_and_hall_list", return_value=True),
+                patch.object(self.scanner, "_refresh_hall_list_order"),
+                patch.object(
+                    self.scanner,
+                    "_capture_ocr",
+                    return_value=(None, hall_list_items),
+                ),
+                patch.object(self.scanner, "_is_hall_list", return_value=True),
+                patch.object(
+                    self.scanner,
+                    "_find_hall_candidates",
+                    return_value=[candidate],
+                ),
+                patch.object(
+                    self.scanner,
+                    "_scroll_hall_list_until_changed",
+                    return_value=(),
+                ),
+                patch.object(self.scanner, "_open_hall") as enter,
+                patch.object(self.scanner, "_log") as log,
+            ):
+                result = self.scanner._run(context, argv)
+
+        self.assertTrue(result)
+        enter.assert_not_called()
+        self.assertTrue(
+            any("命中跳过名称" in str(argument) for call in log.call_args_list for argument in call.args)
+        )
 
     def test_regular_scan_retries_recorded_hall_and_preserves_state_on_failure(self) -> None:
         controller = FakeController()

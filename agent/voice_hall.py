@@ -1,9 +1,11 @@
 import ctypes
+from difflib import SequenceMatcher
 import json
 import os
 import re
 import time
 import traceback
+import unicodedata
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -32,6 +34,7 @@ DEFAULT_DATABASE = PROJECT_ROOT / "data" / "voice_hall.sqlite3"
 DEFAULT_STATE = PROJECT_ROOT / "data" / "voice_hall_scan_state.json"
 DEFAULT_DEBUG_LOG = PROJECT_ROOT / "data" / "voice_hall_agent.log"
 DEFAULT_OPEN_FAILURE_DIR = PROJECT_ROOT / "debug" / "on_error"
+DEFAULT_HALL_LIST_FAILURE_DIR = PROJECT_ROOT / "debug" / "hall_list_recovery"
 CHINA_TZ = timezone(timedelta(hours=8))
 
 OCR_NODE = "OCRFull"
@@ -58,6 +61,9 @@ LEADERBOARD_START_Y = 330
 UI_DUMP_PATH_PREFIX = "/sdcard/maa_voice_hall"
 UI_DUMP_COMMAND = "timeout -k 1 3 uiautomator dump --compressed"
 UI_DUMP_CONTROLLER_TIMEOUT_MS = 5000
+APP_RESTART_CONTROLLER_TIMEOUT_MS = 8000
+APP_RESTART_WARMUP_SECONDS = 4.0
+DEFAULT_TARGET_APP_PACKAGE = "com.sybl.voiceroom"
 
 HALL_ID_RE = re.compile(r"(?<!\d)(\d{4,8})(?!\d)")
 PROFILE_ID_RE = re.compile(r"(?:I\s*D|ID|电)\s*[:：]?\s*(\d{4,12})", re.IGNORECASE)
@@ -605,6 +611,124 @@ def _is_hall_list_hierarchy(hierarchy: str) -> bool:
     )
 
 
+def _find_entertainment_nav_point(
+    items: list[Any],
+    hierarchy: str,
+) -> tuple[int, int] | None:
+    """Find the bottom navigation's Entertainment entry on the app home page."""
+    ocr_candidates: list[tuple[int, int, int, int]] = []
+    for item in items:
+        text = _result_text(item)
+        x, y, width, height = _box(item)
+        if "娱乐" in text and y >= HALL_NAV_MIN_Y:
+            ocr_candidates.append((x, y, width, height))
+    if ocr_candidates:
+        return _center(max(ocr_candidates, key=lambda box: box[1]))
+
+    root = _parse_android_hierarchy(hierarchy)
+    if root is None:
+        return None
+    hierarchy_candidates: list[tuple[int, int, int, int]] = []
+    for node in root.iter("node"):
+        text = (
+            node.attrib.get("text", "") or node.attrib.get("content-desc", "")
+        ).strip()
+        box = _parse_android_bounds(node.attrib.get("bounds", ""))
+        if "娱乐" in text and box and box[1] >= HALL_NAV_MIN_Y:
+            hierarchy_candidates.append(box)
+    if hierarchy_candidates:
+        return _center(max(hierarchy_candidates, key=lambda box: box[1]))
+    return None
+
+
+def _is_resume_room_prompt(items: list[Any], hierarchy: str) -> bool:
+    texts = [_result_text(item) for item in items]
+    joined_text = " ".join(texts)
+    if "未正常退出" in joined_text or "重新进入之前的房间" in joined_text:
+        return True
+
+    root = _parse_android_hierarchy(hierarchy)
+    if root is None:
+        return False
+    return any(
+        "未正常退出" in node.attrib.get("text", "")
+        or "重新进入之前的房间" in node.attrib.get("text", "")
+        for node in root.iter("node")
+    )
+
+
+def _find_resume_room_cancel_point(
+    items: list[Any],
+    hierarchy: str,
+) -> tuple[int, int] | None:
+    for item in items:
+        if _result_text(item) == "取消":
+            return _center(_box(item))
+
+    root = _parse_android_hierarchy(hierarchy)
+    if root is None:
+        return None
+    for node in root.iter("node"):
+        resource_id = node.attrib.get("resource-id", "")
+        text = node.attrib.get("text", "").strip()
+        if not (
+            resource_id.endswith(":id/tvCancel")
+            or text == "取消"
+        ):
+            continue
+        box = _parse_android_bounds(node.attrib.get("bounds", ""))
+        if box:
+            return _center(box)
+    return None
+
+
+def _is_locked_room_prompt(items: list[Any], hierarchy: str) -> bool:
+    texts = [_result_text(item) for item in items]
+    joined_text = " ".join(texts)
+    if "房间密码" in joined_text or "请输入密码" in joined_text:
+        return True
+
+    root = _parse_android_hierarchy(hierarchy)
+    if root is None:
+        return False
+    has_password_input = any(
+        node.attrib.get("resource-id", "").endswith(":id/et_pwd")
+        for node in root.iter("node")
+    )
+    has_password_title = any(
+        "房间密码" in node.attrib.get("text", "")
+        or "请输入密码" in node.attrib.get("text", "")
+        for node in root.iter("node")
+    )
+    return has_password_input or has_password_title
+
+
+def _find_locked_room_cancel_point(
+    items: list[Any],
+    hierarchy: str,
+) -> tuple[int, int] | None:
+    for item in items:
+        if _result_text(item) in {"取消", "关闭"}:
+            return _center(_box(item))
+
+    root = _parse_android_hierarchy(hierarchy)
+    if root is None:
+        return None
+    for node in root.iter("node"):
+        resource_id = node.attrib.get("resource-id", "")
+        text = node.attrib.get("text", "").strip()
+        if not (
+            resource_id.endswith(":id/iv_cancel")
+            or resource_id.endswith(":id/tv_cancel")
+            or text in {"取消", "关闭"}
+        ):
+            continue
+        box = _parse_android_bounds(node.attrib.get("bounds", ""))
+        if box:
+            return _center(box)
+    return None
+
+
 def _has_inner_page_back_control(hierarchy: str) -> bool:
     root = _parse_android_hierarchy(hierarchy)
     return root is not None and any(
@@ -685,6 +809,36 @@ def _normalize_setting_list(value: Any) -> set[str]:
     return {item.strip() for item in values if item.strip()}
 
 
+def _normalize_room_name(value: Any) -> str:
+    """Normalize a hall name before applying the user skip rules."""
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return "".join(char for char in text if char.isalnum() or "\u4e00" <= char <= "\u9fff")
+
+
+def _room_name_matches_skip(room_name: Any, skipped_names: set[str]) -> bool:
+    actual = _normalize_room_name(room_name)
+    if not actual:
+        return False
+    for configured in skipped_names:
+        target = _normalize_room_name(configured)
+        if not target:
+            continue
+        if target == actual:
+            return True
+        # Do not let a one-character rule accidentally skip nearly every hall.
+        if len(target) < 2:
+            continue
+        if target in actual or actual in target:
+            return True
+        actual_chars = iter(actual)
+        if all(char in actual_chars for char in target):
+            return True
+        if len(target) >= 3 and len(actual) >= 3:
+            if SequenceMatcher(None, target, actual).ratio() >= 0.72:
+                return True
+    return False
+
+
 def _normalize_gender_selection(value: Any) -> set[str]:
     aliases = {"male": "男", "female": "女", "unknown": "未知"}
     return {aliases.get(item.lower(), item) for item in _normalize_setting_list(value)}
@@ -722,6 +876,13 @@ def _should_save_level_samples(project_root: Path = PROJECT_ROOT) -> bool:
         project_root / "maafw"
     ).is_dir()
     return not is_packaged_release
+
+
+def _debug_path_text(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(PROJECT_ROOT))
+    except ValueError:
+        return str(path.resolve())
 
 
 class ContributionScanner(CustomAction):
@@ -785,9 +946,24 @@ class ContributionScanner(CustomAction):
         unknown_gender_as_male = bool(params.get("unknown_gender_as_male", False))
         single_hall = bool(params.get("single_hall", False))
         skipped_room_ids = _normalize_setting_list(params.get("skip_room_ids"))
+        skipped_room_names = _normalize_setting_list(params.get("skip_room_names"))
         record_genders = _selected_record_genders(params)
         skip_scanned_today = bool(params.get("skip_scanned_today", False)) or (
             getattr(argv, "custom_action_name", "") == SKIP_SCANNED_CUSTOM_ACTION
+        )
+        self.auto_restart_target_app = _setting_enabled(
+            params.get("auto_restart_target_app", True)
+        )
+        configured_package = str(
+            params.get("target_app_package", DEFAULT_TARGET_APP_PACKAGE) or ""
+        ).strip()
+        self.target_app_package = (
+            configured_package
+            if re.fullmatch(
+                r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+",
+                configured_package,
+            )
+            else None
         )
 
         self.cloud_sync = None
@@ -815,6 +991,7 @@ class ContributionScanner(CustomAction):
             f"扫描日期={scan_day}",
             f"每厅扫描上限={max_users_per_hall}",
             f"跳过厅数={len(skipped_room_ids)}",
+            f"跳过厅名称数={len(skipped_room_names)}",
             f"记录性别={','.join(sorted(record_genders))}",
             f"跳过今日已扫描厅={skip_scanned_today}",
         )
@@ -829,6 +1006,9 @@ class ContributionScanner(CustomAction):
                 self._log(f"厅 {room_id} 在跳过列表中，单厅调试不进入")
                 return False
             room_name = str(params.get("room_name") or room_id).strip() or room_id
+            if _room_name_matches_skip(room_name, skipped_room_names):
+                self._log(f"厅 {room_name} 在跳过名称列表中，单厅调试不进入")
+                return False
             _, items = self._capture_ocr(context)
             if self._is_more_menu(items):
                 self.controller.post_click_key(4).wait()
@@ -869,9 +1049,10 @@ class ContributionScanner(CustomAction):
             visited_halls = {}
             state["visited_halls"] = visited_halls
 
-        if not self._return_to_hall_list(context, max_attempts=5):
-            self._log("没有回到厅列表页，任务结束")
-            return False
+        if not self._ensure_target_app_and_hall_list(context):
+            if not self._recover_to_hall_list(context, max_attempts=5):
+                self._log("无法打开双鱼部落或恢复到厅列表页，任务结束")
+                return False
         self._refresh_hall_list_order(context, delay)
 
         new_hall_count = 0
@@ -919,6 +1100,9 @@ class ContributionScanner(CustomAction):
                     continue
 
                 hall_name = str(candidate.get("name") or hall_id)
+                if _room_name_matches_skip(hall_name, skipped_room_names):
+                    self._log(f"厅 {hall_name} ({hall_id}) 命中跳过名称，未进入")
+                    continue
                 self._log(f"进入厅 {hall_name} ({hall_id})")
 
                 if not self._open_hall(context, int(candidate["card_y"]), delay):
@@ -1300,7 +1484,14 @@ class ContributionScanner(CustomAction):
             self._log(f"排名 {rank} 用户性别={initial_gender} 不在记录性别中，立即跳过")
             return True
 
-        user_id = leaderboard_user_id or self._copy_profile_id(context)
+        user_id = leaderboard_user_id
+        if not user_id:
+            user_id, profile_image, profile_items = self._read_profile_id_with_retry(
+                context,
+                profile_image,
+                profile_items,
+                from_leaderboard=from_leaderboard,
+            )
 
         # Some leaderboard users do not expose a profile even though Android
         # reports their avatar as clickable. Wait for slow transitions before
@@ -1317,13 +1508,6 @@ class ContributionScanner(CustomAction):
             self._log(f"排名 {rank} 的头像点击后仍在贡献榜，跳过")
             return False
 
-        if not profile_items:
-            profile_image, profile_items = self._capture_ocr(context)
-
-        if not user_id and not from_leaderboard:
-            user_id = self._extract_profile_id(profile_items)
-            if user_id:
-                self._log(f"排名 {rank} 的 ID 使用 OCR 兜底：{user_id}")
         if not user_id:
             self._log(f"排名 {rank} 的用户详情未获取到 ID，跳过")
             self.controller.post_click_key(4).wait()
@@ -1623,17 +1807,66 @@ class ContributionScanner(CustomAction):
                 if success:
                     screenshot_path = prefix.with_suffix(".png")
                     encoded.tofile(screenshot_path)
-                    saved.append(str(screenshot_path.relative_to(PROJECT_ROOT)))
+                    saved.append(_debug_path_text(screenshot_path))
 
             if hierarchy:
                 hierarchy_path = prefix.with_suffix(".xml")
                 hierarchy_path.write_text(hierarchy, encoding="utf-8")
-                saved.append(str(hierarchy_path.relative_to(PROJECT_ROOT)))
+                saved.append(_debug_path_text(hierarchy_path))
 
             if saved:
                 self._log("贡献榜打开失败现场已保存：", ", ".join(saved))
         except (OSError, TypeError, ValueError, cv2.error) as exc:
             self._log(f"贡献榜打开失败现场保存失败：{exc}")
+
+    def _save_hall_list_recovery_failure(
+        self,
+        image: Any,
+        hierarchy: str,
+        items: list[Any],
+        attempts: int,
+    ) -> None:
+        """Keep the final screen, UI tree, and OCR evidence after navigation fails."""
+        try:
+            DEFAULT_HALL_LIST_FAILURE_DIR.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now(CHINA_TZ).strftime("%Y.%m.%d-%H.%M.%S.%f")[:-3]
+            prefix = DEFAULT_HALL_LIST_FAILURE_DIR / f"{timestamp}_HallListRecovery"
+            saved: list[str] = []
+
+            pixels = np.asarray(image) if image is not None else np.asarray([])
+            if pixels.size and pixels.ndim in (2, 3):
+                if pixels.dtype != np.uint8:
+                    pixels = np.clip(pixels, 0, 255).astype(np.uint8)
+                success, encoded = cv2.imencode(".png", pixels)
+                if success:
+                    screenshot_path = prefix.with_suffix(".png")
+                    encoded.tofile(screenshot_path)
+                    saved.append(_debug_path_text(screenshot_path))
+
+            if hierarchy:
+                hierarchy_path = prefix.with_suffix(".xml")
+                hierarchy_path.write_text(hierarchy, encoding="utf-8")
+                saved.append(_debug_path_text(hierarchy_path))
+
+            evidence = {
+                "attempts": attempts,
+                "ocr": [
+                    {"text": _result_text(item), "box": list(_box(item))}
+                    for item in items
+                ],
+                "has_hierarchy": bool(hierarchy),
+            }
+            evidence_path = prefix.with_suffix(".json")
+            evidence_path.write_text(
+                json.dumps(evidence, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            saved.append(_debug_path_text(evidence_path))
+
+            if saved:
+                self._log("返回厅列表失败现场已保存：", ", ".join(saved))
+        except (OSError, TypeError, ValueError, cv2.error) as exc:
+            self._log(f"返回厅列表失败现场保存失败：{exc}")
 
     def _copy_profile_id(self, context: Context | None = None) -> str | None:
         if context is not None:
@@ -1654,6 +1887,87 @@ class ContributionScanner(CustomAction):
             return user_id
         return None
 
+    def _read_profile_id_with_retry(
+        self,
+        context: Context,
+        image: Any,
+        items: list[Any],
+        from_leaderboard: bool = False,
+    ) -> tuple[str | None, Any, list[Any]]:
+        """Read a profile ID after the detail page has finished rendering.
+
+        The first hierarchy dump can contain the profile shell without the ID
+        value. Re-capture both OCR and accessibility data so either source can
+        recover once the page settles. A confirmed contribution-board snapshot
+        is treated as a hard stop because pressing Back there would close the
+        board and break the remaining scan.
+        """
+        user_id = self._copy_profile_id(context)
+        if user_id:
+            return user_id, image, items
+
+        def extract_id(current_items: list[Any]) -> str | None:
+            if self._is_contribution_panel(current_items):
+                return None
+            profile_confirmed = not from_leaderboard or self._is_profile_page(
+                current_items
+            ) or _is_profile_hierarchy(self._last_profile_hierarchy)
+            if profile_confirmed:
+                return self._extract_profile_id(current_items)
+            for item in current_items:
+                text = _result_text(item).translate(
+                    str.maketrans("０１２３４５６７８９", "0123456789")
+                )
+                match = PROFILE_ID_RE.search(text)
+                if match:
+                    return match.group(1)
+            return None
+
+        user_id = extract_id(items)
+        if user_id and not self._is_contribution_panel(items):
+            self._log("资料页 ID 使用 OCR 读取：", user_id)
+            return user_id, image, items
+
+        for attempt in range(PROFILE_DETAIL_RETRY_ATTEMPTS):
+            self._check_stopping(context)
+            if self._is_contribution_panel(items) or _is_contribution_hierarchy(
+                self._last_profile_hierarchy
+            ):
+                return None, image, items
+
+            self._log(
+                "资料页 ID 尚未稳定，等待后重试：",
+                f"第 {attempt + 1} 次",
+            )
+            self._sleep(context, PROFILE_DETAIL_RETRY_SECONDS)
+            retry_image, retry_items = self._capture_ocr(context)
+            retry_hierarchy = self._dump_ui_hierarchy()
+            if retry_hierarchy.find("<?xml") >= 0:
+                self._last_profile_hierarchy = retry_hierarchy
+
+            if self._is_contribution_panel(retry_items) or _is_contribution_hierarchy(
+                retry_hierarchy
+            ):
+                return None, retry_image, retry_items
+
+            target = _find_profile_copy_target(retry_hierarchy)
+            if target:
+                user_id, copy_point = target
+                self.controller.post_click(*copy_point).wait()
+                self._sleep(context, 0.15)
+                self._log("资料页 ID 使用 UI 复制控件读取：", user_id)
+                return user_id, retry_image, retry_items
+
+            if retry_items or retry_hierarchy:
+                image = retry_image
+                items = retry_items
+            user_id = extract_id(items)
+            if user_id:
+                self._log("资料页 ID 使用 OCR 读取：", user_id)
+                return user_id, image, items
+
+        return None, image, items
+
     def _dump_ui_hierarchy(self) -> str:
         token = str(time.monotonic_ns())
         command, marker = _build_ui_dump_command(token)
@@ -1672,6 +1986,183 @@ class ContributionScanner(CustomAction):
         if f"{marker}:0" not in hierarchy:
             return ""
         return hierarchy
+
+    def _foreground_app_package(self) -> str | None:
+        """Read the foreground third-party package from Android window manager."""
+        try:
+            _ensure_shell_api_types()
+            output = self.controller.post_shell(
+                "dumpsys window windows; dumpsys activity activities",
+                timeout=APP_RESTART_CONTROLLER_TIMEOUT_MS,
+            ).get(wait=True)
+        except (AttributeError, ctypes.ArgumentError, RuntimeError, OSError, TypeError):
+            return None
+
+        text = str(output) if output is not None else ""
+        package_pattern = re.compile(
+            r"\bu\d+\s+([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+)/"
+        )
+        candidates: list[str] = []
+        for line in text.splitlines():
+            if not any(
+                marker in line
+                for marker in ("mCurrentFocus=", "mFocusedApp=", "mResumedActivity=")
+            ):
+                continue
+            candidates.extend(package_pattern.findall(line))
+
+        blocked_prefixes = (
+            "android.",
+            "com.android.",
+            "com.google.android.",
+            "com.netease.mumu",
+        )
+        for package in reversed(candidates):
+            if not package.startswith(blocked_prefixes):
+                return package
+        return None
+
+    def _target_app_is_installed(self, package: str) -> bool:
+        try:
+            marker = f"__HELLOFISH_APP_INSTALLED_{time.monotonic_ns()}__"
+            output = self.controller.post_shell(
+                f"pm path {package}; echo {marker}",
+                timeout=APP_RESTART_CONTROLLER_TIMEOUT_MS,
+            ).get(wait=True)
+        except (AttributeError, ctypes.ArgumentError, RuntimeError, OSError, TypeError) as exc:
+            self._log(f"检查目标 APK 失败：{exc}")
+            return False
+        text = str(output) if output is not None else ""
+        return marker in text and "package:" in text
+
+    def _launch_target_app(self, context: Context) -> bool:
+        """Launch the configured APK without clearing its current task state."""
+        package = self.target_app_package or DEFAULT_TARGET_APP_PACKAGE
+        if not re.fullmatch(
+            r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+",
+            package,
+        ):
+            self._log("目标 APK 包名格式异常，跳过应用启动：", package)
+            return False
+        if not self._target_app_is_installed(package):
+            self._log("目标 APK 未安装，无法自动打开：", package)
+            return False
+
+        marker = f"__HELLOFISH_APP_LAUNCH_{time.monotonic_ns()}__"
+        command = (
+            f"monkey -p {package} -c android.intent.category.LAUNCHER 1 "
+            f">/dev/null 2>&1; echo {marker}"
+        )
+        try:
+            self._log(f"自动打开目标 APK：{package}")
+            output = self.controller.post_shell(
+                command,
+                timeout=APP_RESTART_CONTROLLER_TIMEOUT_MS,
+            ).get(wait=True)
+            if marker not in str(output):
+                self._log("目标 APK 启动命令未返回确认标记")
+                return False
+            self.target_app_package = package
+            self._sleep(context, APP_RESTART_WARMUP_SECONDS)
+            return True
+        except (AttributeError, ctypes.ArgumentError, RuntimeError, OSError, TypeError) as exc:
+            self._log(f"目标 APK 启动失败：{exc}")
+            return False
+
+    def _ensure_target_app_and_hall_list(self, context: Context) -> bool:
+        """Ensure a normal scan starts inside the target app's hall list."""
+        package = self.target_app_package or DEFAULT_TARGET_APP_PACKAGE
+        foreground = self._foreground_app_package()
+        if foreground == package:
+            self._log("双鱼部落已在前台，检查是否位于厅列表页")
+            if self._return_to_hall_list(context, max_attempts=5):
+                return True
+            self._log("双鱼部落当前页面无法恢复到厅列表，交给恢复流程处理")
+            return False
+
+        if foreground:
+            self._log(f"当前前台应用为 {foreground}，准备打开双鱼部落")
+        else:
+            self._log("未读取到前台应用，准备打开双鱼部落")
+        if not self._launch_target_app(context):
+            return False
+        restored = self._return_to_hall_list(context, max_attempts=8)
+        self._log("自动打开后厅列表恢复：", "成功" if restored else "失败")
+        return restored
+
+    def _restart_target_app(self, context: Context) -> bool:
+        """Force-stop the target APK and restore its hall-list screen."""
+        package = self.target_app_package or self._foreground_app_package()
+        if not package:
+            self._log("未识别到可重启的双鱼部落前台 APK，跳过应用重启")
+            return False
+        if not re.fullmatch(
+            r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+",
+            package,
+        ):
+            self._log("前台 APK 包名格式异常，跳过应用重启：", package)
+            return False
+        if package.startswith(
+            ("android.", "com.android.", "com.google.android.", "com.netease.mumu")
+        ):
+            self._log("拒绝重启系统或模拟器 APK：", package)
+            return False
+        if not self._target_app_is_installed(package):
+            self._log("目标 APK 未安装，跳过应用重启：", package)
+            return False
+
+        marker = f"__HELLOFISH_APP_RESTART_{time.monotonic_ns()}__"
+        command = (
+            f"am force-stop {package}; sleep 1; "
+            f"monkey -p {package} -c android.intent.category.LAUNCHER 1 "
+            f">/dev/null 2>&1; echo {marker}"
+        )
+        try:
+            self._log(f"重启目标 APK：{package}")
+            self.target_app_package = package
+            output = self.controller.post_shell(
+                command,
+                timeout=APP_RESTART_CONTROLLER_TIMEOUT_MS,
+            ).get(wait=True)
+            if marker not in str(output):
+                self._log("目标 APK 重启命令未返回确认标记")
+                return False
+            self._sleep(context, APP_RESTART_WARMUP_SECONDS)
+            restored = self._return_to_hall_list(context, max_attempts=8)
+            self._log("目标 APK 重启后厅列表恢复：", "成功" if restored else "失败")
+            return restored
+        except (AttributeError, ctypes.ArgumentError, RuntimeError, OSError, TypeError) as exc:
+            self._log(f"目标 APK 重启失败：{exc}")
+            return False
+
+    def _reconnect_controller(self, context: Context) -> bool:
+        try:
+            self._log("控制器无进展，尝试重新连接 ADB")
+            self.controller.post_connection().wait()
+            self._sleep(context, 1.0)
+            marker = f"__HELLOFISH_HEALTH_{time.monotonic_ns()}__"
+            output = self.controller.post_shell(
+                f"echo {marker}",
+                timeout=3500,
+            ).get(wait=True)
+            healthy = marker in str(output)
+            self._log("ADB 重连探测结果：", "成功" if healthy else "失败")
+            return healthy
+        except (AttributeError, ctypes.ArgumentError, RuntimeError, OSError, TypeError) as exc:
+            self._log(f"ADB 重连失败：{exc}")
+            return False
+
+    def _recover_to_hall_list(self, context: Context, max_attempts: int) -> bool:
+        if self._return_to_hall_list(context, max_attempts=max_attempts):
+            return True
+        if self._reconnect_controller(context) and self._return_to_hall_list(
+            context,
+            max_attempts=2,
+        ):
+            return True
+        if self.auto_restart_target_app:
+            return self._restart_target_app(context)
+        return False
 
     def _open_contribution_panel(self, context: Context, delay: float) -> None:
         for _ in range(3):
@@ -1695,11 +2186,37 @@ class ContributionScanner(CustomAction):
             if _is_contribution_hierarchy(self._dump_ui_hierarchy()):
                 return
 
+    def _dismiss_locked_room_prompt(
+        self,
+        context: Context,
+        items: list[Any],
+        hierarchy: str,
+    ) -> None:
+        cancel_point = _find_locked_room_cancel_point(items, hierarchy)
+        self._log("检测到锁厅密码弹窗，关闭后返回厅列表并跳过")
+        if cancel_point:
+            self.controller.post_click(*cancel_point).wait()
+        else:
+            self.controller.post_click_key(4).wait()
+        self._sleep(context, 0.7)
+
     def _return_to_hall_list(self, context: Context, max_attempts: int) -> bool:
         for attempt in range(max_attempts):
             self._check_stopping(context)
             _, items = self._capture_ocr(context)
             hierarchy = self._dump_ui_hierarchy()
+            if _is_resume_room_prompt(items, hierarchy):
+                cancel_point = _find_resume_room_cancel_point(items, hierarchy)
+                self._log("检测到异常退出提示，先取消恢复房间")
+                if cancel_point:
+                    self.controller.post_click(*cancel_point).wait()
+                else:
+                    self.controller.post_click_key(4).wait()
+                self._sleep(context, 0.7)
+                continue
+            if _is_locked_room_prompt(items, hierarchy):
+                self._dismiss_locked_room_prompt(context, items, hierarchy)
+                continue
             hall_list_by_ocr = self._is_hall_list(items)
             hall_list_by_hierarchy = _is_hall_list_hierarchy(hierarchy)
             if hall_list_by_ocr or hall_list_by_hierarchy:
@@ -1722,6 +2239,13 @@ class ContributionScanner(CustomAction):
                 or _has_inner_page_back_control(hierarchy)
             )
             if not known_inner_page:
+                entertainment_point = _find_entertainment_nav_point(items, hierarchy)
+                if entertainment_point:
+                    self._log("当前位于双鱼部落首页，点击底部娱乐进入厅列表")
+                    self.controller.post_click(*entertainment_point).wait()
+                    self._sleep(context, 0.7)
+                    continue
+            if not known_inner_page:
                 self._log(
                     "厅列表识别未命中，按返回键尝试恢复：",
                     [_result_text(item) for item in items[:8]],
@@ -1743,9 +2267,17 @@ class ContributionScanner(CustomAction):
             if attempt + 1 < max_attempts and not after_hierarchy:
                 self._log("无障碍层级未获取到，将继续尝试返回")
 
-        _, items = self._capture_ocr(context)
+        image, items = self._capture_ocr(context)
         hierarchy = self._dump_ui_hierarchy()
-        return self._is_hall_list(items) or _is_hall_list_hierarchy(hierarchy)
+        restored = self._is_hall_list(items) or _is_hall_list_hierarchy(hierarchy)
+        if not restored:
+            self._save_hall_list_recovery_failure(
+                image,
+                hierarchy,
+                items,
+                max_attempts,
+            )
+        return restored
 
     def _open_hall(self, context: Context, card_y: int, delay: float) -> bool:
         self._check_stopping(context)
@@ -1760,6 +2292,10 @@ class ContributionScanner(CustomAction):
             if self._is_room_page(items):
                 self._log("进厅成功，准备打开贡献榜")
                 return True
+            hierarchy = self._dump_ui_hierarchy()
+            if _is_locked_room_prompt(items, hierarchy):
+                self._dismiss_locked_room_prompt(context, items, hierarchy)
+                return False
         return False
 
     def _scroll_hall_list(self, context: Context, delay: float) -> None:
@@ -2513,7 +3049,7 @@ class ContributionScanner(CustomAction):
         return (
             category_count >= 2
             or (candidate_count >= 2 and has_hall_nav)
-            or (candidate_count >= 1 and (category_count >= 1 or has_hall_nav))
+            or (candidate_count >= 1 and category_count >= 1)
         )
 
     @staticmethod

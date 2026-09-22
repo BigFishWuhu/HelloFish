@@ -33,7 +33,9 @@ def main():
     try:
         started = contribution_viewer.start_background_server()
         status = "后台服务已启动" if started else "后台服务已在运行"
-        print(f"[ContributionViewer] {status}：{contribution_viewer.DEFAULT_URL}")
+        url = contribution_viewer.get_server_url()
+        location = url or "随机端口（请查看贡献记录服务日志）"
+        print(f"[ContributionViewer] {status}：{location}")
     except Exception as exc:  # noqa: BLE001
         print(f"[ContributionViewer] 启动失败：{exc!r}")
 

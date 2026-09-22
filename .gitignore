@@ -453,3 +453,6 @@ tools/ImageCropper/**/*.png
 config
 debug
 data
+
+# Local agent instructions
+/AGENTS.md

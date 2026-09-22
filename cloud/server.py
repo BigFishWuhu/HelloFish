@@ -32,7 +32,7 @@ from contribution_viewer import (  # noqa: E402
     load_settings,
     parse_export_columns,
     query_records,
-    _record_query_filename_range,
+    _wealth_password_content_disposition,
     save_settings,
 )
 from voice_hall_storage import VoiceHallDatabase  # noqa: E402
@@ -369,17 +369,16 @@ class CloudHandler(BaseHTTPRequestHandler):
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "text/csv; charset=utf-8")
                 self.send_header("Content-Length", str(len(payload)))
-                self.send_header("Content-Disposition", 'attachment; filename="HelloFish-contributions.csv"')
+                self.send_header("Content-Disposition", _wealth_password_content_disposition("csv"))
                 self.end_headers(); self.wfile.write(payload)
                 return
             if path == "/api/export.html":
                 query = RecordQuery.from_query(raw)
                 payload = export_records_html(database_path, settings_path, query)
-                filename = f"HelloFish-contributions-{_record_query_filename_range(query)}.html"
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(payload)))
-                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                self.send_header("Content-Disposition", _wealth_password_content_disposition("html"))
                 self.send_header("X-Content-Type-Options", "nosniff")
                 self.send_header(
                     "Content-Security-Policy",

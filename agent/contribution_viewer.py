@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 from urllib.request import urlopen
 
 from voice_hall_storage import VoiceHallDatabase
@@ -28,9 +28,8 @@ DEFAULT_DATABASE = PROJECT_ROOT / "data" / "voice_hall.sqlite3"
 DEFAULT_SETTINGS = PROJECT_ROOT / "data" / "contribution_viewer_settings.json"
 DEFAULT_WEB_ROOT = PROJECT_ROOT / "web" / "contributions"
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8765
-DEFAULT_URL = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}/"
-DEFAULT_HEALTH_URL = f"{DEFAULT_URL}api/health"
+DEFAULT_PORT = 0
+DEFAULT_RUNTIME_ENDPOINT = PROJECT_ROOT / "data" / "contribution_viewer_port.json"
 DEFAULT_LOG = PROJECT_ROOT / "data" / "contribution_viewer.log"
 HEALTH_RESPONSE = {"service": "HelloFishContributionViewer"}
 MAX_PAGE_SIZE = 200
@@ -79,6 +78,84 @@ _SETTINGS_LOCK = threading.Lock()
 _SERVER_LOCK = threading.Lock()
 _SERVER: "ContributionViewerServer | None" = None
 _SERVER_THREAD: threading.Thread | None = None
+
+
+def _format_host(host: str) -> str:
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
+
+
+def _server_url(host: str, port: int, path: str = "/") -> str:
+    return f"http://{_format_host(host)}:{port}{path}"
+
+
+def _read_runtime_endpoint(
+    path: Path = DEFAULT_RUNTIME_ENDPOINT,
+) -> tuple[str, int] | None:
+    try:
+        with path.open("r", encoding="utf-8") as file:
+            value = json.load(file)
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    host = str(value.get("host", "")).strip()
+    try:
+        port = int(value.get("port", 0))
+    except (TypeError, ValueError):
+        return None
+    if host not in {"127.0.0.1", "localhost", "::1"} or not 1 <= port <= 65535:
+        return None
+    return host, port
+
+
+def _write_runtime_endpoint(
+    host: str,
+    port: int,
+    path: Path = DEFAULT_RUNTIME_ENDPOINT,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    payload = {
+        "host": host,
+        "port": port,
+        "pid": os.getpid(),
+        "url": _server_url(host, port),
+    }
+    with temporary.open("w", encoding="utf-8") as file:
+        json.dump(payload, file, ensure_ascii=False)
+    temporary.replace(path)
+
+
+def _clear_runtime_endpoint(
+    host: str,
+    port: int,
+    path: Path = DEFAULT_RUNTIME_ENDPOINT,
+) -> None:
+    """Remove the endpoint only when it still points at this server process."""
+    try:
+        with path.open("r", encoding="utf-8") as file:
+            value = json.load(file)
+        endpoint = _read_runtime_endpoint(path)
+        if (
+            endpoint != (host, port)
+            or not isinstance(value, dict)
+            or int(value.get("pid", 0)) != os.getpid()
+        ):
+            return
+        path.unlink()
+    except (FileNotFoundError, TypeError, ValueError, json.JSONDecodeError):
+        pass
+    except OSError:
+        pass
+
+
+def get_server_url(
+    runtime_path: Path = DEFAULT_RUNTIME_ENDPOINT,
+) -> str | None:
+    endpoint = _read_runtime_endpoint(runtime_path)
+    if endpoint is None:
+        return None
+    return _server_url(*endpoint)
 
 
 def _normalize_ids(value: Any) -> list[str]:
@@ -493,7 +570,7 @@ body { margin: 0; min-width: 320px; }
 .eyebrow { margin: 0 0 8px; color: #8de6d5; font-size: 12px; font-weight: 800; letter-spacing: .18em; }
 h1 { margin: 0; font-size: 46px; line-height: 1; letter-spacing: 0; }
 .subtitle { margin: 14px 0 0; color: #d5efeb; }
-main { padding: 26px clamp(14px, 4vw, 56px) 48px; }
+main { position: relative; z-index: 1; padding: 26px clamp(14px, 4vw, 56px) 48px; }
 .summary { display: flex; align-items: center; flex-wrap: wrap; gap: 24px; padding: 0 4px 18px; }
 .summary div { display: grid; min-width: 130px; }
 .summary strong { font-size: 20px; }
@@ -538,6 +615,28 @@ tbody tr:nth-child(even) { background: #fbfdfd; }
 .toast.visible { opacity: 1; transform: translateY(0); }
 .clipboard-fallback { position: fixed; left: -9999px; }
 @media (max-width: 720px) { h1 { font-size: 36px; } .summary time { width: 100%; margin-left: 0; } }
+body { position: relative; overflow-x: hidden; background-color: #fbf1df; background-image: linear-gradient(45deg, rgba(184, 38, 24, .035) 25%, transparent 25%), linear-gradient(-45deg, rgba(184, 38, 24, .035) 25%, transparent 25%); background-position: 0 0, 16px 16px; background-size: 32px 32px; }
+body::before { position: fixed; inset: 0; z-index: 0; display: grid; place-items: center; color: rgba(156, 28, 18, .06); content: "财神爷"; font-size: clamp(150px, 28vw, 420px); font-weight: 900; letter-spacing: 0; pointer-events: none; transform: rotate(-12deg); }
+.hero { position: relative; overflow: hidden; background: radial-gradient(circle at 82% 18%, rgba(255, 221, 105, .5), transparent 24%), linear-gradient(120deg, #861b18 0%, #b72a1b 58%, #d18a16 100%); }
+.hero::after { position: absolute; right: clamp(18px, 7vw, 100px); bottom: -24px; color: rgba(255, 237, 160, .35); content: "福"; font-size: 150px; font-weight: 900; line-height: 1; transform: rotate(10deg); }
+.filters { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); }
+.filters > :nth-child(1) { grid-column: 1 / 3; }
+.filters > :nth-child(2) { grid-column: 3 / 5; }
+.filters > :nth-child(3) { grid-column: 5 / 7; }
+.filters > :nth-child(4) { grid-column: 7 / 9; }
+.filters > :nth-child(5) { grid-column: 9 / 12; }
+.filters > :nth-child(6) { grid-column: 12 / 13; }
+.filters > :nth-child(7) { grid-column: 1 / 3; }
+.filters > :nth-child(8) { grid-column: 3 / 5; }
+.filters > :nth-child(9) { grid-column: 5 / 9; min-width: 0; }
+.filters > :nth-child(10) { grid-column: 9 / 13; }
+.filters > .field,
+.filters > .filter-actions { min-width: 0; }
+.table-panel tbody td, table tbody td { color: #8a9897; }
+table tbody td:nth-child(6) { color: #17343b; font-size: 14px; font-weight: 800; }
+table tbody td:nth-child(10) { color: #9a5b08; font-size: 14px; font-weight: 900; }
+table tbody td:nth-child(6) .user-copy { color: #17343b; }
+@media (max-width: 720px) { .filters { grid-template-columns: 1fr 1fr; } .filters > * { grid-column: auto !important; min-width: 0; } .filters > :nth-child(9) { grid-column: 1 / -1 !important; } .filters > :nth-child(10) { grid-column: 1 / -1 !important; } }
 @media print { :root { background: white; } .hero { print-color-adjust: exact; } main { padding: 18px 0; } .panel { border-radius: 0; box-shadow: none; } }
 """.strip()
 
@@ -716,6 +815,22 @@ def _record_query_filename_range(record_query: RecordQuery) -> str:
     return f"{start}_{end}"
 
 
+def _wealth_password_filename(extension: str) -> str:
+    """Return the compact, user-facing export name requested by the viewer."""
+    export_date = datetime.now(timezone.utc).astimezone(CHINA_TZ).strftime("%Y-%m-%d")
+    return f"{export_date}-财富密码.{extension}"
+
+
+def _wealth_password_content_disposition(extension: str) -> str:
+    filename = _wealth_password_filename(extension)
+    encoded = quote(filename, safe="")
+    export_date = filename[:10]
+    return (
+        f'attachment; filename="{export_date}-wealth-password.{extension}"; '
+        f"filename*=UTF-8''{encoded}"
+    )
+
+
 def export_records_html(
     database_path: Path,
     settings_path: Path,
@@ -831,7 +946,7 @@ def export_records_html(
 <section class="panel">
 <div class="table-scroll">
 <table>
-<thead><tr><th>日期 / 时间</th><th>厅</th><th>排名</th><th>距前一名金额</th><th>推测金额</th><th>用户</th><th>性别</th><th>IP 属地</th><th>挚友</th><th>财富等级</th><th>魅力等级</th><th>账号判断</th></tr></thead>
+<thead><tr><th>日期 / 时间</th><th>厅</th><th>排名</th><th>距前一名金额</th><th>推测金额</th><th>用户名</th><th>性别</th><th>IP 属地</th><th>挚友</th><th>财富等级</th><th>魅力等级</th><th>账号判断</th></tr></thead>
 <tbody id="records-body">{table_content}</tbody>
 </table>
 <div id="empty-state" class="empty{' hidden' if table_rows else ''}">当前条件下没有贡献记录</div>
@@ -944,12 +1059,12 @@ class ContributionViewerHandler(BaseHTTPRequestHandler):
                     query,
                     columns,
                 )
-                filename = f"HelloFish-contributions-{_record_query_filename_range(query)}.csv"
+                filename = _wealth_password_filename("csv")
                 self._send_bytes(
                     HTTPStatus.OK,
                     payload,
                     "text/csv; charset=utf-8",
-                    headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+                    headers={"Content-Disposition": _wealth_password_content_disposition("csv")},
                 )
                 return
             if parsed.path == "/api/export.html":
@@ -960,12 +1075,11 @@ class ContributionViewerHandler(BaseHTTPRequestHandler):
                     self.server.settings_path,
                     query,
                 )
-                filename = f"HelloFish-contributions-{_record_query_filename_range(query)}.html"
                 self._send_bytes(
                     HTTPStatus.OK,
                     payload,
                     "text/html; charset=utf-8",
-                    headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+                    headers={"Content-Disposition": _wealth_password_content_disposition("html")},
                     content_security_policy=(
                         "default-src 'none'; style-src 'unsafe-inline'; "
                         "script-src 'unsafe-inline'; img-src data:; "
@@ -1045,9 +1159,16 @@ def ensure_server(
 
 
 def is_server_running(
-    health_url: str = DEFAULT_HEALTH_URL,
+    health_url: str | None = None,
     timeout: float = 0.5,
+    *,
+    runtime_path: Path = DEFAULT_RUNTIME_ENDPOINT,
 ) -> bool:
+    if health_url is None:
+        endpoint = _read_runtime_endpoint(runtime_path)
+        if endpoint is None:
+            return False
+        health_url = _server_url(*endpoint, "/api/health")
     try:
         with urlopen(health_url, timeout=timeout) as response:  # noqa: S310
             return response.status == HTTPStatus.OK and json.load(response) == HEALTH_RESPONSE
@@ -1060,6 +1181,7 @@ def start_background_server(
     *,
     startup_timeout: float = 5.0,
     log_path: Path = DEFAULT_LOG,
+    runtime_path: Path = DEFAULT_RUNTIME_ENDPOINT,
 ) -> bool:
     """Start the viewer outside the Maa Agent process.
 
@@ -1067,7 +1189,7 @@ def start_background_server(
     when a healthy viewer was already listening. The worker watches MXU's PID,
     so stopping a Maa task does not stop the viewer, while closing MXU does.
     """
-    if is_server_running():
+    if is_server_running(runtime_path=runtime_path):
         return False
 
     parent_pid = owner_pid if owner_pid is not None else os.getppid()
@@ -1077,6 +1199,8 @@ def start_background_server(
         "-u",
         str(Path(__file__).resolve()),
         "--serve",
+        "--runtime-path",
+        str(runtime_path),
         "--owner-pid",
         str(parent_pid),
     ]
@@ -1099,7 +1223,7 @@ def start_background_server(
 
     deadline = time.monotonic() + startup_timeout
     while time.monotonic() < deadline:
-        if is_server_running():
+        if is_server_running(runtime_path=runtime_path):
             return True
         if process.poll() is not None:
             break
@@ -1151,6 +1275,7 @@ def serve_until_owner_exits(
     web_root: Path = DEFAULT_WEB_ROOT,
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
+    runtime_path: Path = DEFAULT_RUNTIME_ENDPOINT,
 ) -> None:
     if not web_root.joinpath("index.html").is_file():
         raise FileNotFoundError(f"未找到贡献记录网页：{web_root}")
@@ -1160,7 +1285,11 @@ def serve_until_owner_exits(
         settings_path,
         web_root,
     )
-    print(f"[ContributionViewer] 后台服务已启动：{DEFAULT_URL}", flush=True)
+    actual_host = str(server.server_address[0])
+    actual_port = int(server.server_port)
+    _write_runtime_endpoint(actual_host, actual_port, runtime_path)
+    server_url = _server_url(actual_host, actual_port)
+    print(f"[ContributionViewer] 后台服务已启动：{server_url}", flush=True)
     try:
         if owner_pid is None:
             server.serve_forever()
@@ -1170,6 +1299,7 @@ def serve_until_owner_exits(
             server.handle_request()
     finally:
         server.server_close()
+        _clear_runtime_endpoint(actual_host, actual_port, runtime_path)
         print("[ContributionViewer] MXU 已退出，后台服务已停止", flush=True)
 
 
@@ -1177,10 +1307,22 @@ def _main() -> None:
     parser = argparse.ArgumentParser(description="HelloFish contribution viewer")
     parser.add_argument("--serve", action="store_true", help="run the HTTP service")
     parser.add_argument("--owner-pid", type=int, help="exit when this process exits")
+    parser.add_argument(
+        "--runtime-path",
+        type=Path,
+        default=DEFAULT_RUNTIME_ENDPOINT,
+        help="file used to publish the randomly assigned local port",
+    )
     args = parser.parse_args()
     if not args.serve:
         parser.error("需要指定 --serve")
-    serve_until_owner_exits(args.owner_pid)
+    if is_server_running(runtime_path=args.runtime_path):
+        print(
+            f"[ContributionViewer] 后台服务已在运行：{get_server_url(args.runtime_path)}",
+            flush=True,
+        )
+        return
+    serve_until_owner_exits(args.owner_pid, runtime_path=args.runtime_path)
 
 
 if __name__ == "__main__":

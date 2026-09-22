@@ -487,6 +487,40 @@ class ContributionViewerTest(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
 
+    def test_runtime_endpoint_is_published_and_cleared(self) -> None:
+        web_root = self.root / "web"
+        web_root.mkdir()
+        web_root.joinpath("index.html").write_text("viewer", encoding="utf-8")
+        runtime_path = self.root / "contribution_viewer_port.json"
+        server = ContributionViewerServer(
+            ("127.0.0.1", 0),
+            self.database_path,
+            self.settings_path,
+            web_root,
+        )
+        actual_port = server.server_port
+        contribution_viewer._write_runtime_endpoint(
+            "127.0.0.1", actual_port, runtime_path
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            self.assertEqual(
+                contribution_viewer.get_server_url(runtime_path),
+                f"http://127.0.0.1:{actual_port}/",
+            )
+            self.assertTrue(
+                contribution_viewer.is_server_running(runtime_path=runtime_path)
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+            contribution_viewer._clear_runtime_endpoint(
+                "127.0.0.1", actual_port, runtime_path
+            )
+        self.assertFalse(runtime_path.exists())
+
     @patch("contribution_viewer.subprocess.Popen")
     @patch("contribution_viewer.is_server_running", side_effect=[False, True])
     def test_background_server_is_launched_with_the_mxu_owner_pid(

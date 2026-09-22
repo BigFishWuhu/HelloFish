@@ -4,7 +4,7 @@
     "description": "基于 MaaFramework 的语音厅贡献榜信息采集工具。",
     "contact": "https://github.com/BigFishWuhu/HelloFish/issues",
     "license": "MIT",
-    "welcome": "欢迎使用 HelloFish。启动任务前，请先将模拟器停留在厅列表页。",
+    "welcome": "欢迎使用 HelloFish。贡献记录服务会自动使用系统分配的本机端口，实际访问地址会写入启动日志。",
     "github": "https://github.com/BigFishWuhu/HelloFish",
     "version": "1.0.0",
     "controller": [
@@ -43,7 +43,7 @@
             "name": "语音厅贡献榜扫描",
             "entry": "VoiceHallScanStart",
             "default_check": true,
-            "description": "首次启动任务后，可在退出 MXU 前随时[查看贡献记录](http://127.0.0.1:8765/)；停止任务不会关闭页面。",
+            "description": "首次启动任务后，可在退出 MXU 前随时查看贡献记录；服务使用系统随机可用端口，实际访问地址请查看启动日志。停止任务不会关闭页面。",
             "option": [
                 "ContributionRankLimit",
                 "SkipScannedToday",
@@ -146,11 +146,17 @@
         "ScanGenderFilter": {
             "type": "input",
             "label": "跳过厅设置",
-            "description": "设置不进入的厅 ID，多个值用逗号或空格分隔。",
+            "description": "设置不进入的厅 ID 或名称，多个值用逗号或空格分隔；名称支持模糊匹配。",
             "inputs": [
                 {
                     "name": "skip_room_ids",
                     "label": "跳过厅 ID",
+                    "default": "",
+                    "pipeline_type": "string"
+                },
+                {
+                    "name": "skip_room_names",
+                    "label": "跳过厅名称",
                     "default": "",
                     "pipeline_type": "string"
                 }
@@ -158,7 +164,8 @@
             "pipeline_override": {
                 "VoiceHallScanStart": {
                     "custom_action_param": {
-                        "skip_room_ids": "{skip_room_ids}"
+                        "skip_room_ids": "{skip_room_ids}",
+                        "skip_room_names": "{skip_room_names}"
                     }
                 }
             }
