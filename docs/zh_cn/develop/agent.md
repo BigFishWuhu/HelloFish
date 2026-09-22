@@ -225,6 +225,45 @@ class ClickTargetAction(CustomAction): ...
 >
 > 如果你正在使用其他编译型语言，请考虑编译链和调用包的跨平台能力。
 
+## 发布版本
+
+HelloFish 使用 GitHub Actions 根据 `v*` 标签自动构建 Windows 发布包并创建 GitHub Release。发布前请确认本次要包含的工作区修改范围；如果工作区存在其他未提交修改，不要在未确认的情况下混入发布。
+
+### 发布前检查
+
+```bash
+# 查看当前分支、工作区和最近提交
+git status --short
+git log -1 --oneline --decorate
+
+# 运行全量测试和 Python 语法检查
+python -m unittest discover -s tests
+python -m py_compile agent/contribution_viewer.py cloud/server.py
+git diff --check
+```
+
+如果网页资源有变更，同时更新以下文件中的静态资源版本号，避免浏览器缓存旧的 CSS 或 JavaScript：
+
+- `web/contributions/index.html`
+- `cloud/web/contributions/index.html`
+
+### 提交并发布
+
+版本号遵循语义化版本格式，例如从 `v1.3.16` 发布到 `v1.3.17`：
+
+```bash
+# 提交本次确认要发布的全部修改
+git add .
+git commit -m "chore: prepare v1.3.17 release"
+git push origin main
+
+# 给发布提交创建标签并推送；标签会触发 GitHub Actions
+git tag -a v1.3.17 -m "Release v1.3.17"
+git push origin v1.3.17
+```
+
+推送标签后，在仓库的 **Actions** 页面确认 `install.yml` 构建成功，再到 **Releases** 页面确认发布包已经生成。若标签已经存在，应先选择新的版本号，不要覆盖已有发布标签。
+
 ## 其他内容
 
 有关 AgentServer 的更多调用方法请参考[集成接口一览](https://github.com/MaaXYZ/MaaFramework/blob/main/docs/zh_cn/2.2-%E9%9B%86%E6%88%90%E6%8E%A5%E5%8F%A3%E4%B8%80%E8%A7%88.md)或[接口源码](https://github.com/MaaXYZ/MaaFramework/blob/main/docs/zh_cn/2.1-%E9%9B%86%E6%88%90%E6%96%87%E6%A1%A3.md)
