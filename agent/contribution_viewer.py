@@ -37,40 +37,32 @@ CHINA_TZ = timezone(timedelta(hours=8))
 EXPORT_COLUMNS = {
     "scanned_at": "扫描时间",
     "scan_date": "扫描日期",
-    "room_name": "厅名称",
-    "room_id": "厅 ID",
+    "room_name": "厅名称 / ID",
     "rank": "厅内排名",
     "contribution_gap": "距前一名",
     "estimated_contribution_value": "推测贡献值",
-    "username": "用户名",
-    "user_id": "用户 ID",
+    "username": "用户名 / ID",
     "gender": "性别",
     "ip": "IP 属地",
     "close_friend_count": "挚友数量",
     "wealth_level": "财富等级",
     "wealth_min_contribution": "等级最低贡献值",
-    "wealth_min_yuan": "等级最低金额（元）",
     "charm_level": "魅力等级",
     "charm_min_value": "等级最低魅力值",
-    "charm_min_yuan": "魅力等级最低金额（元）",
     "account_assessment": "账号判断",
 }
 DEFAULT_EXPORT_COLUMNS = (
     "scanned_at",
     "room_name",
-    "room_id",
     "rank",
     "contribution_gap",
     "estimated_contribution_value",
     "username",
-    "user_id",
     "gender",
     "ip",
     "close_friend_count",
     "wealth_level",
-    "wealth_min_yuan",
     "charm_level",
-    "charm_min_yuan",
     "account_assessment",
 )
 
@@ -483,16 +475,30 @@ def _account_assessment(wealth_value: Any, charm_value: Any) -> str | None:
 
 
 def _export_value(record: sqlite3.Row, column: str) -> Any:
-    if column == "wealth_min_yuan":
-        contribution = record["wealth_min_contribution"]
-        if contribution is None:
-            return "???"
-        return _format_yuan_amount(contribution / 10)
-    if column == "charm_min_yuan":
-        charm_value = record["charm_min_value"]
-        if charm_value is None:
-            return "???"
-        return _format_yuan_amount(charm_value / 10)
+    if column == "room_name":
+        room_name = record["room_name"] or "???"
+        room_id = record["room_id"] or "???"
+        return f"{room_name}（ID {room_id}）"
+    if column == "username":
+        username = record["username"] or "???"
+        user_id = record["user_id"] or "???"
+        return f"{username}（ID {user_id}）"
+    if column == "wealth_level":
+        level = "???" if record["wealth_level"] is None else str(record["wealth_level"])
+        threshold = (
+            _format_yuan_amount(record["wealth_min_contribution"] / 10)
+            if record["wealth_min_contribution"] is not None
+            else "???"
+        )
+        return f"{level}（{threshold}）"
+    if column == "charm_level":
+        level = "???" if record["charm_level"] is None else str(record["charm_level"])
+        threshold = (
+            _format_yuan_amount(record["charm_min_value"] / 10)
+            if record["charm_min_value"] is not None
+            else "???"
+        )
+        return f"{level}（{threshold}）"
     if column == "account_assessment":
         return _account_assessment(
             record["wealth_min_contribution"],
@@ -615,10 +621,8 @@ tbody tr:nth-child(even) { background: #fbfdfd; }
 .toast.visible { opacity: 1; transform: translateY(0); }
 .clipboard-fallback { position: fixed; left: -9999px; }
 @media (max-width: 720px) { h1 { font-size: 36px; } .summary time { width: 100%; margin-left: 0; } }
-body { position: relative; overflow-x: hidden; background-color: #fbf1df; background-image: linear-gradient(45deg, rgba(184, 38, 24, .035) 25%, transparent 25%), linear-gradient(-45deg, rgba(184, 38, 24, .035) 25%, transparent 25%); background-position: 0 0, 16px 16px; background-size: 32px 32px; }
-body::before { position: fixed; inset: 0; z-index: 0; display: grid; place-items: center; color: rgba(156, 28, 18, .06); content: "财神爷"; font-size: clamp(150px, 28vw, 420px); font-weight: 900; letter-spacing: 0; pointer-events: none; transform: rotate(-12deg); }
+body { position: relative; overflow-x: hidden; background-color: #fbf1df; }
 .hero { position: relative; overflow: hidden; background: radial-gradient(circle at 82% 18%, rgba(255, 221, 105, .5), transparent 24%), linear-gradient(120deg, #861b18 0%, #b72a1b 58%, #d18a16 100%); }
-.hero::after { position: absolute; right: clamp(18px, 7vw, 100px); bottom: -24px; color: rgba(255, 237, 160, .35); content: "福"; font-size: 150px; font-weight: 900; line-height: 1; transform: rotate(10deg); }
 .filters { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); }
 .filters > :nth-child(1) { grid-column: 1 / 3; }
 .filters > :nth-child(2) { grid-column: 3 / 5; }
@@ -852,24 +856,28 @@ def _html_export_cell(
     if column == "scan_date":
         return _html_text(record["scan_date"])
     if column == "room_name":
-        return _html_text(record["room_name"])
-    if column == "room_id":
-        return _html_text(record["room_id"])
+        return (
+            f'<div class="identity">{_html_text(record["room_name"])}'
+            f'<small>ID {_html_text(record["room_id"])}</small></div>'
+        )
     if column == "contribution_gap":
         return _format_html_yuan(record["contribution_gap"])
     if column == "estimated_contribution_value":
         return _format_html_yuan(record["estimated_contribution_value"])
     if column == "username":
         return _html_user_button(record, show_name=True)
-    if column == "user_id":
-        return _html_user_button(record, show_name=False)
-    if column in {"wealth_min_yuan", "charm_min_yuan"}:
-        source = "wealth_min_contribution" if column == "wealth_min_yuan" else "charm_min_value"
-        return _format_html_yuan(record[source])
     if column == "account_assessment":
         return assessment_markup
-    if column in {"wealth_level", "charm_level"}:
-        return _html_text(record[column], "???")
+    if column == "wealth_level":
+        return (
+            f'{_html_text(record["wealth_level"], "???")}'
+            f'<small>（{_format_html_yuan(record["wealth_min_contribution"])}）</small>'
+        )
+    if column == "charm_level":
+        return (
+            f'{_html_text(record["charm_level"], "???")}'
+            f'<small>（{_format_html_yuan(record["charm_min_value"])}）</small>'
+        )
     if column in {"wealth_min_contribution", "charm_min_value"}:
         return _html_text(record[column], "???")
     return _html_text(record[column])
@@ -966,8 +974,8 @@ def export_records_html(
                 for column in columns
             )
             cell_classes = {
-                index: "wealth" if column in {"wealth_level", "wealth_min_contribution", "wealth_min_yuan"}
-                else "charm" if column in {"charm_level", "charm_min_value", "charm_min_yuan"}
+                index: "wealth" if column in {"wealth_level", "wealth_min_contribution"}
+                else "charm" if column in {"charm_level", "charm_min_value"}
                 else ""
                 for index, column in enumerate(columns)
             }
@@ -1019,7 +1027,7 @@ def export_records_html(
 <section class="panel">
 <div class="table-scroll">
 <table>
-<thead><tr>{''.join(f'<th>{_html_text(EXPORT_COLUMNS[column])}</th>' for column in columns) if not legacy_layout else '<th>日期 / 时间</th><th>厅</th><th>排名</th><th>距前一名金额</th><th>推测金额</th><th>用户名</th><th>性别</th><th>IP 属地</th><th>挚友</th><th>财富等级</th><th>魅力等级</th><th>账号判断</th>'}</tr></thead>
+<thead><tr>{''.join(f'<th>{_html_text(EXPORT_COLUMNS[column])}</th>' for column in columns) if not legacy_layout else '<th>日期 / 时间</th><th>厅名称 / ID</th><th>排名</th><th>距前一名金额</th><th>推测金额</th><th>用户名 / ID</th><th>性别</th><th>IP 属地</th><th>挚友</th><th>财富等级</th><th>魅力等级</th><th>账号判断</th>'}</tr></thead>
 <tbody id="records-body">{table_content}</tbody>
 </table>
 <div id="empty-state" class="empty{' hidden' if table_rows else ''}">当前条件下没有贡献记录</div>

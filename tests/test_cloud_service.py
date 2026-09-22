@@ -92,13 +92,13 @@ class CloudServiceTest(unittest.TestCase):
         headers = {"Authorization": f"Basic {credentials}"}
         status, _, body = self.call(
             "/api/export.html?date_mode=custom&start_date=2026-09-14&end_date=2026-09-14"
-            "&columns=username,room_id",
+            "&columns=username,room_name",
             headers=headers,
         )
 
         self.assertEqual(status, 200)
         document = body.decode("utf-8")
-        self.assertIn("<th>用户名</th><th>厅 ID</th>", document)
+        self.assertIn("<th>用户名 / ID</th><th>厅名称 / ID</th>", document)
         self.assertNotIn("<th>日期 / 时间</th>", document)
 
     def test_first_user_setup_is_one_time(self) -> None:

@@ -11,27 +11,7 @@
 body {
     margin: 0;
     min-width: 320px;
-    position: relative;
-    overflow-x: hidden;
-    background-color: #fbf1df;
-    background-image: linear-gradient(45deg, rgba(184, 38, 24, 0.035) 25%, transparent 25%),
-        linear-gradient(-45deg, rgba(184, 38, 24, 0.035) 25%, transparent 25%);
-    background-position: 0 0, 16px 16px;
-    background-size: 32px 32px;
-}
-body::before {
-    position: fixed;
-    inset: 0;
-    z-index: 0;
-    display: grid;
-    place-items: center;
-    color: rgba(156, 28, 18, 0.06);
-    content: "财神爷";
-    font-size: clamp(150px, 28vw, 420px);
-    font-weight: 900;
-    letter-spacing: 0;
-    pointer-events: none;
-    transform: rotate(-12deg);
+    background: #f4f8f7;
 }
 button,
 input,
@@ -59,18 +39,6 @@ button:disabled {
     background: radial-gradient(circle at 82% 18%, rgba(255, 221, 105, 0.5), transparent 24%),
         linear-gradient(120deg, #861b18 0%, #b72a1b 58%, #d18a16 100%);
 }
-.hero::after {
-    position: absolute;
-    right: clamp(18px, 7vw, 100px);
-    bottom: -24px;
-    color: rgba(255, 237, 160, 0.35);
-    content: "福";
-    font-size: 150px;
-    font-weight: 900;
-    line-height: 1;
-    transform: rotate(10deg);
-}
-
 .eyebrow {
     margin: 0 0 8px;
     color: #8de6d5;

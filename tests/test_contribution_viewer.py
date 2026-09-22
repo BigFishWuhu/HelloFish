@@ -263,10 +263,10 @@ class ContributionViewerTest(unittest.TestCase):
             self.database_path,
             self.settings_path,
             query,
-            ["user_id"],
+            ["username"],
         )
         rows = list(csv.reader(io.StringIO(payload.decode("utf-8-sig"))))
-        self.assertEqual(rows, [["用户 ID"], ["u-in-minute"], ["u1"]])
+        self.assertEqual(rows, [["用户名 / ID"], ["u-in-minute（ID u-in-minute）"], ["甲（ID u1）"]])
 
         document = export_records_html(
             self.database_path,
@@ -304,13 +304,12 @@ class ContributionViewerTest(unittest.TestCase):
             self.database_path,
             self.settings_path,
             query,
-            ["username", "user_id", "wealth_min_yuan"],
+            ["username", "wealth_level"],
         )
         rows = list(csv.reader(io.StringIO(payload.decode("utf-8-sig"))))
-        self.assertEqual(rows[0], ["用户名", "用户 ID", "等级最低金额（元）"])
+        self.assertEqual(rows[0], ["用户名 / ID", "财富等级"])
         self.assertEqual(len(rows), 2)
-        self.assertEqual(rows[1][:2], ["甲", "u1"])
-        self.assertNotEqual(rows[1][2], "")
+        self.assertEqual(rows[1], ["甲（ID u1）", "20（120元）"])
 
     def test_csv_export_includes_relative_and_estimated_contributions(self) -> None:
         query = RecordQuery.from_query({}, today=date(2026, 9, 14))
@@ -330,14 +329,14 @@ class ContributionViewerTest(unittest.TestCase):
             self.database_path,
             self.settings_path,
             query,
-            ["charm_level", "charm_min_value", "charm_min_yuan", "account_assessment"],
+            ["charm_level", "charm_min_value", "account_assessment"],
         )
         rows = list(csv.reader(io.StringIO(payload.decode("utf-8-sig"))))
         self.assertEqual(
             rows[0],
-            ["魅力等级", "等级最低魅力值", "魅力等级最低金额（元）", "账号判断"],
+            ["魅力等级", "等级最低魅力值", "账号判断"],
         )
-        self.assertEqual(rows[1], ["3", "30", "3元", "高概率真实玩家"])
+        self.assertEqual(rows[1], ["3（3元）", "30", "高概率真实玩家"])
 
     def test_csv_export_formats_yuan_amounts_by_wan(self) -> None:
         self.assertEqual(_format_yuan_amount(9999), "9999元")
@@ -365,19 +364,24 @@ class ContributionViewerTest(unittest.TestCase):
             self.database_path,
             self.settings_path,
             query,
-            ["wealth_min_yuan"],
+            ["wealth_level"],
         )
         rows = list(csv.reader(io.StringIO(payload.decode("utf-8-sig"))))
-        self.assertEqual(rows[0], ["等级最低金额（元）"])
-        self.assertTrue(rows[1][0].endswith(("元", "万元")))
+        self.assertEqual(rows[0], ["财富等级"])
+        amount_level = next(row[0] for row in rows[1:] if row[0].startswith("200（"))
+        self.assertTrue(amount_level.endswith(("元）", "万元）")))
 
     def test_export_columns_are_allowlisted_and_deduplicated(self) -> None:
         columns = parse_export_columns(
-            {"columns": ["user_id,username,user_id,not-a-column"]}
+            {"columns": ["room_name,username,room_name,not-a-column"]}
         )
-        self.assertEqual(columns, ["user_id", "username"])
+        self.assertEqual(columns, ["room_name", "username"])
         with self.assertRaisesRegex(ValueError, "至少选择"):
             parse_export_columns({"columns": ["not-a-column"]})
+        with self.assertRaisesRegex(ValueError, "至少选择"):
+            parse_export_columns({"columns": ["wealth_min_yuan"]})
+        with self.assertRaisesRegex(ValueError, "至少选择"):
+            parse_export_columns({"columns": ["user_id,room_id"]})
 
     def test_html_export_is_unpaginated_uses_yuan_and_escapes_data(self) -> None:
         with closing(sqlite3.connect(self.database_path)) as connection, connection:
@@ -429,6 +433,9 @@ class ContributionViewerTest(unittest.TestCase):
         self.assertIn("hellofish-copied-user-ids-v1", document)
         self.assertIn('content: "已复制"', document)
         self.assertIn("position: absolute", document)
+        self.assertNotIn("background-image:", document)
+        self.assertNotIn("财神爷", document)
+        self.assertNotIn('content: "福"', document)
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", document)
         self.assertNotIn("<script>alert(1)</script>", document)
         self.assertNotIn("上一页", document)
@@ -440,12 +447,12 @@ class ContributionViewerTest(unittest.TestCase):
             self.database_path,
             self.settings_path,
             query,
-            ["username", "wealth_min_yuan"],
+            ["username", "wealth_level"],
         ).decode("utf-8")
 
-        self.assertIn("<th>用户名</th><th>等级最低金额（元）</th>", document)
+        self.assertIn("<th>用户名 / ID</th><th>财富等级</th>", document)
         self.assertNotIn("<th>日期 / 时间</th>", document)
-        self.assertNotIn("<th>财富等级</th>", document)
+        self.assertNotIn("<th>等级最低金额（元）</th>", document)
         self.assertIn('data-user-id="u1"', document)
         self.assertIn("120 元", document)
 
@@ -495,12 +502,12 @@ class ContributionViewerTest(unittest.TestCase):
         url = (
             f"http://127.0.0.1:{server.server_port}/api/export.html"
             "?date_mode=custom&start_date=2026-09-14&end_date=2026-09-14"
-            "&columns=username,room_id"
+            "&columns=username,room_name"
         )
         try:
             with urlopen(url, timeout=2) as response:  # noqa: S310
                 document = response.read().decode("utf-8")
-                self.assertIn("<th>用户名</th><th>厅 ID</th>", document)
+                self.assertIn("<th>用户名 / ID</th><th>厅名称 / ID</th>", document)
                 self.assertNotIn("<th>日期 / 时间</th>", document)
         finally:
             server.shutdown()
