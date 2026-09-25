@@ -392,12 +392,6 @@ def query_records(
     with closing(sqlite3.connect(database_path, timeout=10)) as connection:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout = 10000")
-        total = int(
-            connection.execute(
-                f"SELECT COUNT(*) FROM contributions AS c WHERE {where_sql}", parameters
-            ).fetchone()[0]
-        )
-        offset = (record_query.page - 1) * record_query.page_size
         rows = connection.execute(
             f"""
             SELECT
@@ -414,19 +408,14 @@ def query_records(
                 ON charm_thresholds.level = c.charm_level
             WHERE {where_sql}
             ORDER BY {order_by}
-            LIMIT ? OFFSET ?
             """,
-            (*parameters, record_query.page_size, offset),
+            parameters,
         ).fetchall()
 
-    records = []
-    for row in rows:
-        record = dict(row)
-        record["account_assessment"] = _account_assessment(
-            record["wealth_min_contribution"],
-            record["charm_min_value"],
-        )
-        records.append(record)
+    grouped_records = _group_records(rows)
+    total = len(grouped_records)
+    offset = (record_query.page - 1) * record_query.page_size
+    records = grouped_records[offset : offset + record_query.page_size]
 
     return {
         "records": records,
@@ -438,6 +427,42 @@ def query_records(
         "start_time": record_query.start_time,
         "end_time": record_query.end_time,
     }
+
+
+def _record_dict(row: sqlite3.Row) -> dict[str, Any]:
+    record = dict(row)
+    record["account_assessment"] = _account_assessment(
+        record["wealth_min_contribution"],
+        record["charm_min_value"],
+    )
+    return record
+
+
+def _group_records(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
+    """Merge matching contribution rows by user while retaining every appearance."""
+    groups: dict[str, dict[str, Any]] = {}
+    for index, row in enumerate(rows):
+        detail = _record_dict(row)
+        user_id = str(detail.get("user_id") or "")
+        # An empty ID cannot reliably identify the same person across rooms.
+        key = user_id if user_id else f"__unknown_{index}"
+        group = groups.get(key)
+        if group is None:
+            group = dict(detail)
+            group["appearances"] = []
+            groups[key] = group
+        group["appearances"].append(detail)
+
+    for group in groups.values():
+        appearances = group["appearances"]
+        latest = max(appearances, key=lambda item: str(item.get("scanned_at") or ""))
+        group.update(latest)
+        group["appearances"] = appearances
+        group["room_count"] = len(
+            {str(item.get("room_id") or "") for item in appearances}
+        )
+        group["appearance_count"] = len(appearances)
+    return list(groups.values())
 
 
 def parse_export_columns(query: dict[str, list[str]]) -> list[str]:
@@ -558,13 +583,31 @@ def export_records_csv(
     record_query: RecordQuery,
     columns: list[str],
 ) -> bytes:
-    rows = _query_export_records(database_path, settings_path, record_query)
+    records = _group_records(
+        _query_export_records(database_path, settings_path, record_query)
+    )
 
     output = io.StringIO(newline="")
     writer = csv.writer(output)
     writer.writerow(EXPORT_COLUMNS[column] for column in columns)
-    for record in rows:
-        writer.writerow(_export_value(record, column) for column in columns)
+    detail_columns = {
+        "scanned_at",
+        "scan_date",
+        "room_name",
+        "rank",
+        "contribution_gap",
+        "estimated_contribution_value",
+    }
+    for record in records:
+        writer.writerow(
+            "\n".join(
+                str(_export_value(detail, column))
+                for detail in record["appearances"]
+            )
+            if column in detail_columns
+            else _export_value(record, column)
+            for column in columns
+        )
     return b"\xef\xbb\xbf" + output.getvalue().encode("utf-8")
 
 
@@ -614,8 +657,14 @@ tbody tr:nth-child(even) { background: #fbfdfd; }
 .assessment { display: inline-block; border-radius: 4px; padding: 4px 7px; font-size: 11px; font-weight: 800; }
 .assessment.suspected { color: #9b342e; background: #fff0ed; }
 .assessment.likely-real { color: #17634e; background: #e7f5ef; }
+.detail-toggle { border: 0; border-radius: 6px; padding: 5px 8px; color: #176c70; background: #e7f2ef; font: inherit; font-size: 11px; font-weight: 800; cursor: pointer; }
+.user-detail-row td { padding: 0; background: #f6faf9; }
+.appearance-details { padding: 10px 22px 18px 42px; }
+.appearance-table { border: 1px solid #dce8e5; border-radius: 7px; background: white; }
+.appearance-table th { position: static; padding: 9px 12px; }
+.appearance-table td { padding: 9px 12px; font-size: 12px; background: white; }
 .empty { padding: 58px 20px; color: #829699; text-align: center; }
-.hidden { display: none !important; }
+.hidden, .filtered-out { display: none !important; }
 .footnote { color: #71888c; font-size: 12px; text-align: right; }
 .toast { position: fixed; right: 20px; bottom: 20px; z-index: 10; max-width: calc(100vw - 40px); padding: 11px 14px; color: white; background: #17343b; border-radius: 6px; box-shadow: 0 8px 24px rgba(17, 72, 76, .22); opacity: 0; transform: translateY(8px); pointer-events: none; transition: opacity .16s ease, transform .16s ease; }
 .toast.visible { opacity: 1; transform: translateY(0); }
@@ -637,9 +686,9 @@ body { position: relative; overflow-x: hidden; background-color: #fbf1df; }
 .filters > .field,
 .filters > .filter-actions { min-width: 0; }
 .table-panel tbody td, table tbody td { color: #8a9897; }
-table tbody td:nth-child(6) { color: #17343b; font-size: 14px; font-weight: 800; }
-table tbody td:nth-child(10) { color: #9a5b08; font-size: 14px; font-weight: 900; }
-table tbody td:nth-child(6) .user-copy { color: #17343b; }
+table > tbody > tr.user-summary-row > td:nth-child(1) { color: #17343b; font-size: 14px; font-weight: 800; }
+table > tbody > tr.user-summary-row > td:nth-child(7) { color: #9a5b08; font-size: 14px; font-weight: 900; }
+table > tbody > tr.user-summary-row > td:nth-child(1) .user-copy { color: #17343b; }
 @media (max-width: 720px) { .filters { grid-template-columns: 1fr 1fr; } .filters > * { grid-column: auto !important; min-width: 0; } .filters > :nth-child(9) { grid-column: 1 / -1 !important; } .filters > :nth-child(10) { grid-column: 1 / -1 !important; } }
 @media print { :root { background: white; } .hero { print-color-adjust: exact; } main { padding: 18px 0; } .panel { border-radius: 0; box-shadow: none; } }
 """.strip()
@@ -715,7 +764,7 @@ async function copyUserId(button) {
 }
 
 const filterForm = document.querySelector("#static-filters");
-const rows = Array.from(document.querySelectorAll("#records-body tr"));
+const rows = Array.from(document.querySelectorAll("#records-body .user-summary-row"));
 const total = document.querySelector("#record-total");
 const empty = document.querySelector("#empty-state");
 
@@ -724,25 +773,24 @@ function fieldValue(name) {
 }
 
 function rowMatches(row) {
-    const startTime = fieldValue("start_time");
-    const endTime = fieldValue("end_time");
-    const scanTime = row.dataset.scanTime;
-    if ((startTime && scanTime < startTime) || (endTime && scanTime > endTime)) return false;
-
-    const gender = fieldValue("gender");
-    if (gender !== "all" && row.dataset.gender !== gender) return false;
-
-    const wealth = row.dataset.wealth === "" ? null : Number(row.dataset.wealth);
-    if (wealth === null && !filterForm.elements.include_unknown.checked) return false;
-    const minimumWealth = fieldValue("min_wealth");
-    if (minimumWealth && wealth !== null && wealth <= Number(minimumWealth)) return false;
-
-    const minimumFriends = fieldValue("min_friends");
-    if (minimumFriends && (row.dataset.friends === "" || Number(row.dataset.friends) < Number(minimumFriends))) return false;
-    if (fieldValue("room_id") && row.dataset.roomId !== fieldValue("room_id")) return false;
     if (fieldValue("user_id") && row.dataset.userId !== fieldValue("user_id")) return false;
-    const username = fieldValue("username").toLocaleLowerCase();
-    return !username || row.dataset.username.toLocaleLowerCase().includes(username);
+    const appearances = JSON.parse(row.dataset.appearances || "[]");
+    return appearances.some((appearance) => {
+        const startTime = fieldValue("start_time");
+        const endTime = fieldValue("end_time");
+        if ((startTime && appearance.scan_time < startTime) || (endTime && appearance.scan_time > endTime)) return false;
+        const gender = fieldValue("gender");
+        if (gender !== "all" && appearance.gender !== gender) return false;
+        const wealth = appearance.wealth === "" ? null : Number(appearance.wealth);
+        if (wealth === null && !filterForm.elements.include_unknown.checked) return false;
+        const minimumWealth = fieldValue("min_wealth");
+        if (minimumWealth && wealth !== null && wealth <= Number(minimumWealth)) return false;
+        const minimumFriends = fieldValue("min_friends");
+        if (minimumFriends && (appearance.friends === "" || Number(appearance.friends) < Number(minimumFriends))) return false;
+        if (fieldValue("room_id") && appearance.room_id !== fieldValue("room_id")) return false;
+        const username = fieldValue("username").toLocaleLowerCase();
+        return !username || appearance.username.toLocaleLowerCase().includes(username);
+    });
 }
 
 function applyFilters() {
@@ -750,6 +798,7 @@ function applyFilters() {
     for (const row of rows) {
         const matches = rowMatches(row);
         row.classList.toggle("hidden", !matches);
+        row.nextElementSibling?.classList.toggle("filtered-out", !matches);
         if (matches) shown += 1;
     }
     total.textContent = shown;
@@ -770,6 +819,15 @@ document.querySelectorAll("[data-user-id]").forEach((button) => {
 });
 
 document.addEventListener("click", (event) => {
+    const toggle = event.target.closest(".detail-toggle");
+    if (toggle) {
+        const detailRow = toggle.closest("tr").nextElementSibling;
+        const expanded = toggle.getAttribute("aria-expanded") === "true";
+        toggle.setAttribute("aria-expanded", String(!expanded));
+        toggle.textContent = expanded ? toggle.dataset.summary : "收起各厅详情";
+        detailRow.classList.toggle("hidden", expanded);
+        return;
+    }
     const button = event.target.closest("[data-user-id]");
     if (button) copyUserId(button);
 });
@@ -846,77 +904,26 @@ def _html_user_button(record: sqlite3.Row, *, show_name: bool) -> str:
     )
 
 
-def _html_export_cell(
-    record: sqlite3.Row,
-    column: str,
-    assessment_markup: str,
-) -> str:
-    if column == "scanned_at":
-        return _format_html_scan_time(record["scanned_at"])
-    if column == "scan_date":
-        return _html_text(record["scan_date"])
-    if column == "room_name":
-        return (
-            f'<div class="identity">{_html_text(record["room_name"])}'
-            f'<small>ID {_html_text(record["room_id"])}</small></div>'
-        )
-    if column == "contribution_gap":
-        return _format_html_yuan(record["contribution_gap"])
-    if column == "estimated_contribution_value":
-        return _format_html_yuan(record["estimated_contribution_value"])
-    if column == "username":
-        return _html_user_button(record, show_name=True)
-    if column == "account_assessment":
-        return assessment_markup
-    if column == "wealth_level":
-        return (
-            f'{_html_text(record["wealth_level"], "???")}'
-            f'<small>（{_format_html_yuan(record["wealth_min_contribution"])}）</small>'
-        )
-    if column == "charm_level":
-        return (
-            f'{_html_text(record["charm_level"], "???")}'
-            f'<small>（{_format_html_yuan(record["charm_min_value"])}）</small>'
-        )
-    if column in {"wealth_min_contribution", "charm_min_value"}:
-        return _html_text(record[column], "???")
-    return _html_text(record[column])
-
-
 def export_records_html(
     database_path: Path,
     settings_path: Path,
     record_query: RecordQuery,
     columns: list[str] | None = None,
 ) -> bytes:
-    rows = _query_export_records(database_path, settings_path, record_query)
-    # Keep the no-argument export compatible with previously generated files;
-    # the UI passes an explicit list whenever the user chooses columns.
-    if columns is None:
-        columns = [
-            "scanned_at",
-            "room_name",
-            "rank",
-            "contribution_gap",
-            "estimated_contribution_value",
-            "username",
-            "gender",
-            "ip",
-            "close_friend_count",
-            "wealth_level",
-            "charm_level",
-            "account_assessment",
-        ]
-        legacy_layout = True
-    else:
+    rows = _group_records(
+        _query_export_records(database_path, settings_path, record_query)
+    )
+    # Static HTML mirrors the viewer's fixed user-summary layout. Column choices
+    # remain a CSV concern; validate explicit input for API compatibility only.
+    if columns is not None:
         if not columns:
             raise ValueError("至少选择一个有效的导出列")
         columns = [column for column in columns if column in EXPORT_COLUMNS]
         if not columns:
             raise ValueError("至少选择一个有效的导出列")
-        legacy_layout = False
     table_rows: list[str] = []
-    for record in rows:
+    for group_index, record in enumerate(rows):
+        appearances = record["appearances"]
         filter_values = {
             "scan-time": str(record["scanned_at"] or "")[:16],
             "wealth": "" if record["wealth_level"] is None else str(record["wealth_level"]),
@@ -930,6 +937,22 @@ def export_records_html(
             f'data-{name}="{html.escape(value, quote=True)}"'
             for name, value in filter_values.items()
         )
+        appearance_filters = [
+            {
+                "scan_time": str(item["scanned_at"] or "")[:16],
+                "wealth": "" if item["wealth_level"] is None else str(item["wealth_level"]),
+                "gender": _static_filter_gender(item["gender"]),
+                "friends": "" if item["close_friend_count"] is None else str(item["close_friend_count"]),
+                "room_id": str(item["room_id"] or ""),
+                "username": str(item["username"] or ""),
+            }
+            for item in appearances
+        ]
+        filter_attributes += (
+            ' data-appearances="'
+            + html.escape(json.dumps(appearance_filters, ensure_ascii=False), quote=True)
+            + '"'
+        )
         assessment = _account_assessment(
             record["wealth_min_contribution"],
             record["charm_min_value"],
@@ -942,50 +965,66 @@ def export_records_html(
             if assessment
             else "—"
         )
-        if legacy_layout:
-            user_id = _html_text(record["user_id"], "")
-            cells = (
-                _format_html_scan_time(record["scanned_at"]),
-                f'<div class="identity">{_html_text(record["room_name"])}'
-                f'<small>ID {_html_text(record["room_id"])}</small></div>',
-                _html_text(record["rank"]),
-                _format_html_yuan(record["contribution_gap"]),
-                _format_html_yuan(record["estimated_contribution_value"]),
-                f'<button type="button" class="identity user-copy" data-user-id="{user_id}" '
-                f'title="点击复制用户 ID" aria-label="点击复制用户 ID {user_id}">'
-                f'{_html_text(record["username"])}<small>ID {user_id}</small></button>',
-                _html_text(record["gender"]),
-                _html_text(record["ip"]),
-                _html_text(record["close_friend_count"]),
-                (
-                    f'{_html_text(record["wealth_level"], "???")}'
-                    f'<small>（{_format_html_yuan(record["wealth_min_contribution"])}）</small>'
-                ),
-                (
-                    f'{_html_text(record["charm_level"], "???")}'
-                    f'<small>（{_format_html_yuan(record["charm_min_value"])}）</small>'
-                ),
-                assessment_markup,
-            )
-            cell_classes = {9: "wealth", 10: "charm"}
-        else:
-            cells = tuple(
-                _html_export_cell(record, column, assessment_markup)
-                for column in columns
-            )
-            cell_classes = {
-                index: "wealth" if column in {"wealth_level", "wealth_min_contribution"}
-                else "charm" if column in {"charm_level", "charm_min_value"}
-                else ""
-                for index, column in enumerate(columns)
-            }
+        detail_summary = (
+            f'查看 {record["room_count"]} 个厅 · {record["appearance_count"]} 条记录'
+        )
+        toggle = (
+            f'<button type="button" class="detail-toggle" aria-expanded="false" '
+            f'data-summary="{_html_text(detail_summary)}">{_html_text(detail_summary)}</button>'
+        )
+        cells = (
+            _html_user_button(record, show_name=True),
+            toggle,
+            _format_html_scan_time(record["scanned_at"]),
+            _html_text(record["gender"]),
+            _html_text(record["ip"]),
+            _html_text(record["close_friend_count"]),
+            (
+                f'{_html_text(record["wealth_level"], "???")}'
+                f'<small>（{_format_html_yuan(record["wealth_min_contribution"])}）</small>'
+            ),
+            (
+                f'{_html_text(record["charm_level"], "???")}'
+                f'<small>（{_format_html_yuan(record["charm_min_value"])}）</small>'
+            ),
+            assessment_markup,
+        )
+        cell_classes = {6: "wealth", 7: "charm"}
+        detail_rows = "".join(
+            "<tr>"
+            f'<td>{_format_html_scan_time(item["scanned_at"])}</td>'
+            f'<td><div class="identity">{_html_text(item["room_name"])}'
+            f'<small>ID {_html_text(item["room_id"])}</small></div></td>'
+            f'<td>{_html_text(item["rank"])}</td>'
+            f'<td>{_format_html_yuan(item["contribution_gap"])}</td>'
+            f'<td>{_format_html_yuan(item["estimated_contribution_value"])}</td>'
+            f'<td>{_html_text(item["gender"])}</td>'
+            f'<td>{_html_text(item["ip"])}</td>'
+            f'<td>{_html_text(item["close_friend_count"])}</td>'
+            f'<td class="wealth">{_html_text(item["wealth_level"], "???")}'
+            f'<small>（{_format_html_yuan(item["wealth_min_contribution"])}）</small></td>'
+            f'<td class="charm">{_html_text(item["charm_level"], "???")}'
+            f'<small>（{_format_html_yuan(item["charm_min_value"])}）</small></td>'
+            f'<td>{_html_text(item["account_assessment"])}</td>'
+            "</tr>"
+            for item in appearances
+        )
+        detail_markup = (
+            '<tr class="user-detail-row hidden"><td colspan="'
+            f'{len(cells)}"><div class="appearance-details"><table class="appearance-table">'
+            '<thead><tr><th>明细时间</th><th>所在厅 / ID</th><th>厅内排名</th>'
+            '<th>距前一名金额</th><th>推测金额</th><th>性别</th><th>IP 属地</th>'
+            '<th>挚友</th><th>财富等级</th><th>魅力等级</th><th>账号判断</th></tr></thead>'
+            f'<tbody>{detail_rows}</tbody></table></div></td></tr>'
+        )
         table_rows.append(
-            f"<tr {filter_attributes}>"
+            f'<tr class="user-summary-row" data-group="{group_index}" {filter_attributes}>'
             + "".join(
                 f'<td class="{cell_classes.get(index, "")}">{value}</td>'
                 for index, value in enumerate(cells)
             )
             + "</tr>"
+            + detail_markup
         )
 
     date_summary = _record_query_summary(record_query)
@@ -1004,11 +1043,11 @@ def export_records_html(
 <header class="hero">
 <p class="eyebrow">HELLOFISH DATA EXPORT</p>
 <h1>贡献记录</h1>
-<p class="subtitle">静态导出 · 金额按元显示 · 全部匹配记录</p>
+<p class="subtitle">静态导出 · 按用户 ID 合并 · 可展开各厅明细</p>
 </header>
 <main>
 <section class="summary">
-<div><strong id="record-total">{len(rows)}</strong><span>条记录</span></div>
+<div><strong id="record-total">{len(rows)}</strong><span>位用户</span></div>
 <div><strong>{date_summary}</strong><span>数据范围</span></div>
 <time>导出于 {exported_at}</time>
 </section>
@@ -1027,7 +1066,7 @@ def export_records_html(
 <section class="panel">
 <div class="table-scroll">
 <table>
-<thead><tr>{''.join(f'<th>{_html_text(EXPORT_COLUMNS[column])}</th>' for column in columns) if not legacy_layout else '<th>日期 / 时间</th><th>厅名称 / ID</th><th>排名</th><th>距前一名金额</th><th>推测金额</th><th>用户名 / ID</th><th>性别</th><th>IP 属地</th><th>挚友</th><th>财富等级</th><th>魅力等级</th><th>账号判断</th>'}</tr></thead>
+<thead><tr><th>用户名</th><th>出现厅</th><th>最近记录</th><th>性别</th><th>IP 属地</th><th>挚友</th><th>财富等级</th><th>魅力等级</th><th>账号判断</th></tr></thead>
 <tbody id="records-body">{table_content}</tbody>
 </table>
 <div id="empty-state" class="empty{' hidden' if table_rows else ''}">当前条件下没有贡献记录</div>

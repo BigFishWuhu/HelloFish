@@ -210,6 +210,64 @@ class ContributionViewerTest(unittest.TestCase):
             0,
         )
 
+    def test_same_user_in_multiple_rooms_is_grouped_with_appearance_details(self) -> None:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            VoiceHallDatabase._upsert_contribution(
+                connection,
+                {
+                    "room_id": "200",
+                    "room_name": "星光厅",
+                    "rank": 4,
+                    "contribution_gap": 80,
+                    "estimated_contribution_value": 900,
+                    "user_id": "u1",
+                    "username": "甲",
+                    "gender": "男",
+                    "ip": "上海",
+                    "close_friend_count": 2,
+                    "wealth_level": 20,
+                    "charm_level": 3,
+                    "scanned_at": "2026-09-14T11:00:00+08:00",
+                },
+            )
+
+        query = RecordQuery.from_query(
+            {"user_id": ["u1"]}, today=date(2026, 9, 14)
+        )
+        result = query_records(self.database_path, self.settings_path, query)
+
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["records"][0]["room_count"], 2)
+        self.assertEqual(result["records"][0]["appearance_count"], 2)
+        self.assertEqual(
+            [item["room_id"] for item in result["records"][0]["appearances"]],
+            ["200", "100"],
+        )
+
+        payload = export_records_csv(
+            self.database_path,
+            self.settings_path,
+            query,
+            ["username", "room_name", "rank"],
+        )
+        rows = list(csv.reader(io.StringIO(payload.decode("utf-8-sig"))))
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[1][0], "甲（ID u1）")
+        self.assertIn("星光厅（ID 200）\n海风厅（ID 100）", rows[1][1])
+        self.assertEqual(rows[1][2], "4\n1")
+
+        document = export_records_html(
+            self.database_path,
+            self.settings_path,
+            query,
+            ["username", "room_name"],
+        ).decode("utf-8")
+        self.assertIn('<strong id="record-total">1</strong>', document)
+        self.assertIn("2 个厅 · 2 条记录", document)
+        self.assertIn("星光厅", document)
+        self.assertIn("海风厅", document)
+        self.assertIn('class="user-detail-row hidden"', document)
+
     def test_unknown_gender_filter(self) -> None:
         query = RecordQuery.from_query(
             {
@@ -440,7 +498,7 @@ class ContributionViewerTest(unittest.TestCase):
         self.assertNotIn("<script>alert(1)</script>", document)
         self.assertNotIn("上一页", document)
 
-    def test_html_export_uses_selected_columns(self) -> None:
+    def test_html_export_matches_the_user_summary_view(self) -> None:
         query = RecordQuery.from_query({}, today=date(2026, 9, 14))
 
         document = export_records_html(
@@ -450,9 +508,12 @@ class ContributionViewerTest(unittest.TestCase):
             ["username", "wealth_level"],
         ).decode("utf-8")
 
-        self.assertIn("<th>用户名 / ID</th><th>财富等级</th>", document)
-        self.assertNotIn("<th>日期 / 时间</th>", document)
-        self.assertNotIn("<th>等级最低金额（元）</th>", document)
+        self.assertIn(
+            "<th>用户名</th><th>出现厅</th><th>最近记录</th><th>性别</th>",
+            document,
+        )
+        self.assertIn("<th>明细时间</th><th>所在厅 / ID</th>", document)
+        self.assertIn('class="detail-toggle"', document)
         self.assertIn('data-user-id="u1"', document)
         self.assertIn("120 元", document)
 
@@ -487,7 +548,7 @@ class ContributionViewerTest(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
 
-    def test_html_export_endpoint_accepts_selected_columns(self) -> None:
+    def test_html_export_endpoint_keeps_view_layout_with_legacy_columns(self) -> None:
         web_root = self.root / "html-export-selected-web"
         web_root.mkdir()
         web_root.joinpath("index.html").write_text("viewer", encoding="utf-8")
@@ -507,8 +568,10 @@ class ContributionViewerTest(unittest.TestCase):
         try:
             with urlopen(url, timeout=2) as response:  # noqa: S310
                 document = response.read().decode("utf-8")
-                self.assertIn("<th>用户名 / ID</th><th>厅名称 / ID</th>", document)
-                self.assertNotIn("<th>日期 / 时间</th>", document)
+                self.assertIn(
+                    "<th>用户名</th><th>出现厅</th><th>最近记录</th>", document
+                )
+                self.assertIn("<th>明细时间</th><th>所在厅 / ID</th>", document)
         finally:
             server.shutdown()
             server.server_close()

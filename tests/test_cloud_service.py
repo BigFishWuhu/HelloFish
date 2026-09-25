@@ -87,7 +87,7 @@ class CloudServiceTest(unittest.TestCase):
         )
         self.assertIn("贡献记录", body.decode("utf-8"))
 
-    def test_authenticated_user_can_export_selected_html_columns(self) -> None:
+    def test_authenticated_html_export_keeps_view_layout_with_legacy_columns(self) -> None:
         credentials = base64.b64encode(b"alice:secret").decode("ascii")
         headers = {"Authorization": f"Basic {credentials}"}
         status, _, body = self.call(
@@ -98,8 +98,7 @@ class CloudServiceTest(unittest.TestCase):
 
         self.assertEqual(status, 200)
         document = body.decode("utf-8")
-        self.assertIn("<th>用户名 / ID</th><th>厅名称 / ID</th>", document)
-        self.assertNotIn("<th>日期 / 时间</th>", document)
+        self.assertIn("<th>用户名</th><th>出现厅</th><th>最近记录</th>", document)
 
     def test_first_user_setup_is_one_time(self) -> None:
         self.server.users.clear()

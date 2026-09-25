@@ -220,15 +220,19 @@ function renderRecords() {
     const body = $("#records-body");
     body.replaceChildren();
     for (const record of state.records) {
+        const appearances = Array.isArray(record.appearances) && record.appearances.length
+            ? record.appearances
+            : [record];
         const row = document.createElement("tr");
-        const scanned = formatScanTime(record.scanned_at);
-        const room = document.createElement("div");
-        room.className = "identity";
-        room.append(document.createTextNode(escapeText(record.room_name)));
-        const roomId = document.createElement("small");
-        roomId.textContent = `ID ${record.room_id}`;
-        room.append(roomId);
+        row.className = "user-summary-row";
         const user = userCopyButton(record);
+
+        const roomSummary = document.createElement("button");
+        roomSummary.type = "button";
+        roomSummary.className = "detail-toggle";
+        roomSummary.setAttribute("aria-expanded", "false");
+        const uniqueRooms = new Set(appearances.map((item) => String(item.room_id ?? "")));
+        roomSummary.textContent = `查看 ${record.room_count ?? uniqueRooms.size} 个厅 · ${record.appearance_count ?? appearances.length} 条记录`;
 
         const wealth = document.createElement("span");
         wealth.textContent = record.wealth_level ?? "???";
@@ -252,12 +256,9 @@ function renderRecords() {
         }
 
         const values = [
-            scanned,
-            room,
-            record.rank,
-            formatContributionValue(record.contribution_gap),
-            formatContributionValue(record.estimated_contribution_value),
             user,
+            roomSummary,
+            formatScanTime(record.scanned_at),
             record.gender,
             record.ip,
             record.close_friend_count,
@@ -269,15 +270,83 @@ function renderRecords() {
             const cell = document.createElement("td");
             if (value instanceof Node) cell.append(value);
             else cell.textContent = escapeText(value);
-            if (index === 9) cell.className = "wealth";
-            if (index === 10) cell.className = "charm";
+            if (index === 6) cell.className = "wealth";
+            if (index === 7) cell.className = "charm";
             row.append(cell);
         });
-        body.append(row);
+
+        const detailRow = document.createElement("tr");
+        detailRow.className = "user-detail-row hidden";
+        const detailCell = document.createElement("td");
+        detailCell.colSpan = 9;
+        const detailWrap = document.createElement("div");
+        detailWrap.className = "appearance-details";
+        const detailTable = document.createElement("table");
+        detailTable.className = "appearance-table";
+        const detailHead = document.createElement("thead");
+        const headingRow = document.createElement("tr");
+        [
+            "日期 / 时间",
+            "厅",
+            "排名",
+            controls.unit.value === "yuan" ? "距前一名金额" : "距前一名贡献值",
+            controls.unit.value === "yuan" ? "推测金额" : "推测贡献值",
+            "性别",
+            "IP 属地",
+            "挚友",
+            "财富等级",
+            "魅力等级",
+            "账号判断",
+        ].forEach((label) => {
+            const heading = document.createElement("th");
+            heading.textContent = label;
+            headingRow.append(heading);
+        });
+        detailHead.append(headingRow);
+        const detailBody = document.createElement("tbody");
+        appearances.forEach((appearance) => {
+            const appearanceRow = document.createElement("tr");
+            const room = document.createElement("div");
+            room.className = "identity";
+            room.append(document.createTextNode(escapeText(appearance.room_name)));
+            const roomId = document.createElement("small");
+            roomId.textContent = `ID ${appearance.room_id}`;
+            room.append(roomId);
+            [
+                formatScanTime(appearance.scanned_at),
+                room,
+                appearance.rank,
+                formatContributionValue(appearance.contribution_gap),
+                formatContributionValue(appearance.estimated_contribution_value),
+                appearance.gender,
+                appearance.ip,
+                appearance.close_friend_count,
+                `${appearance.wealth_level ?? "???"}（${formatThreshold(appearance.wealth_min_contribution)}）`,
+                `${appearance.charm_level ?? "???"}（${formatCharmThreshold(appearance.charm_min_value)}）`,
+                appearance.account_assessment,
+            ].forEach((value) => {
+                const cell = document.createElement("td");
+                if (value instanceof Node) cell.append(value);
+                else cell.textContent = escapeText(value);
+                appearanceRow.append(cell);
+            });
+            detailBody.append(appearanceRow);
+        });
+        detailTable.append(detailHead, detailBody);
+        detailWrap.append(detailTable);
+        detailCell.append(detailWrap);
+        detailRow.append(detailCell);
+        roomSummary.addEventListener("click", () => {
+            const expanded = roomSummary.getAttribute("aria-expanded") === "true";
+            roomSummary.setAttribute("aria-expanded", String(!expanded));
+            roomSummary.textContent = expanded
+                ? `查看 ${record.room_count ?? uniqueRooms.size} 个厅 · ${record.appearance_count ?? appearances.length} 条记录`
+                : "收起各厅详情";
+            detailRow.classList.toggle("hidden", expanded);
+        });
+        body.append(row, detailRow);
     }
     $("#empty-state").classList.toggle("hidden", state.records.length !== 0);
-    $("#gap-heading").textContent = controls.unit.value === "yuan" ? "距前一名金额" : "距前一名贡献值";
-    $("#estimated-heading").textContent = controls.unit.value === "yuan" ? "推测金额" : "推测贡献值";
 }
 
 function queryParams() {
@@ -350,19 +419,10 @@ function startExport() {
 
 async function startHtmlExport() {
     const button = $("#start-html-export");
-    const columns = exportColumnControls()
-        .filter((control) => control.checked)
-        .map((control) => control.dataset.exportColumn);
-    if (columns.length === 0) {
-        $("#export-status").textContent = "请至少选择一列。";
-        return;
-    }
     persistFilters();
-    localStorage.setItem(exportStorageKey, JSON.stringify(columns));
     const params = new URLSearchParams(queryParams());
     params.delete("page");
     params.delete("page_size");
-    params.set("columns", columns.join(","));
     button.disabled = true;
     $("#export-status").textContent = "正在生成静态 HTML…";
     try {
