@@ -50,6 +50,7 @@
                 "SkipScannedToday",
                 "ScanGenderFilter",
                 "RecordGenders",
+                "CollectCloseFriends",
                 "CloudUpload"
             ]
         },
@@ -59,7 +60,8 @@
             "default_check": false,
             "description": "用于反复调试打不开贡献榜的厅。运行前请先手动进入目标厅并填写厅 ID；该任务不会读取或写入已扫描厅状态。",
             "option": [
-                "SingleHallDebugConfig"
+                "SingleHallDebugConfig",
+                "CollectCloseFriends"
             ]
         }
     ],
@@ -212,6 +214,46 @@
             ],
             "default_case": ["Male", "Female", "Unknown"],
             "min_count": 1
+        },
+        "CollectCloseFriends": {
+            "type": "switch",
+            "label": "统计挚友数量",
+            "description": "默认开启；关闭后读取用户资料时跳过挚友列表统计，挚友数量记为未知，可缩短扫描耗时。",
+            "cases": [
+                {
+                    "name": "Yes",
+                    "label": "开启",
+                    "pipeline_override": {
+                        "VoiceHallScanStart": {
+                            "custom_action_param": {
+                                "collect_close_friend_count": true
+                            }
+                        },
+                        "VoiceHallSingleDebugStart": {
+                            "custom_action_param": {
+                                "collect_close_friend_count": true
+                            }
+                        }
+                    }
+                },
+                {
+                    "name": "No",
+                    "label": "关闭",
+                    "pipeline_override": {
+                        "VoiceHallScanStart": {
+                            "custom_action_param": {
+                                "collect_close_friend_count": false
+                            }
+                        },
+                        "VoiceHallSingleDebugStart": {
+                            "custom_action_param": {
+                                "collect_close_friend_count": false
+                            }
+                        }
+                    }
+                }
+            ],
+            "default_case": "Yes"
         },
         "CloudUpload": {
             "type": "input",

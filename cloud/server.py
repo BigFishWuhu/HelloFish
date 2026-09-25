@@ -31,6 +31,7 @@ from contribution_viewer import (  # noqa: E402
     export_records_html,
     load_settings,
     parse_export_columns,
+    parse_summary_column_order,
     query_records,
     _wealth_password_content_disposition,
     save_settings,
@@ -399,7 +400,14 @@ class CloudHandler(BaseHTTPRequestHandler):
             if path == "/api/export.html":
                 query = RecordQuery.from_query(raw)
                 columns = parse_export_columns(raw) if "columns" in raw else None
-                payload = export_records_html(database_path, settings_path, query, columns)
+                column_order = parse_summary_column_order(raw)
+                payload = export_records_html(
+                    database_path,
+                    settings_path,
+                    query,
+                    columns,
+                    column_order,
+                )
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(payload)))

@@ -27,6 +27,7 @@ from contribution_viewer import (  # noqa: E402
     is_server_running,
     load_settings,
     parse_export_columns,
+    parse_summary_column_order,
     query_records,
     _account_assessment,
     _format_yuan_amount,
@@ -143,6 +144,21 @@ class ContributionViewerTest(unittest.TestCase):
         self.assertIn("start_time: controls.startDate.value", app)
         self.assertIn("end_time: controls.endDate.value", app)
 
+    def test_local_and_cloud_pages_support_estimated_minimum_and_column_order(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        for web_root in (
+            project_root / "web" / "contributions",
+            project_root / "cloud" / "web" / "contributions",
+        ):
+            page = (web_root / "index.html").read_text(encoding="utf-8")
+            script = (web_root / "app.js").read_text(encoding="utf-8")
+            self.assertIn('id="min-estimated"', page)
+            self.assertIn('id="column-order-dialog"', page)
+            self.assertIn("min_estimated_contribution_total", script)
+            self.assertIn("formatEstimatedValue", script)
+            self.assertIn('params.set("column_order"', script)
+            self.assertIn("reorderExportColumns", script)
+
     def test_default_today_uses_china_time_when_host_is_still_in_utc_yesterday(self) -> None:
         with patch.object(
             contribution_viewer,
@@ -240,6 +256,10 @@ class ContributionViewerTest(unittest.TestCase):
         self.assertEqual(result["records"][0]["room_count"], 2)
         self.assertEqual(result["records"][0]["appearance_count"], 2)
         self.assertEqual(
+            result["records"][0]["estimated_contribution_total"],
+            2_400,
+        )
+        self.assertEqual(
             [item["room_id"] for item in result["records"][0]["appearances"]],
             ["200", "100"],
         )
@@ -267,6 +287,37 @@ class ContributionViewerTest(unittest.TestCase):
         self.assertIn("星光厅", document)
         self.assertIn("海风厅", document)
         self.assertIn('class="user-detail-row hidden"', document)
+
+    def test_minimum_estimated_total_filters_after_user_rooms_are_merged(self) -> None:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            VoiceHallDatabase._upsert_contribution(
+                connection,
+                {
+                    "room_id": "200",
+                    "room_name": "星光厅",
+                    "rank": 4,
+                    "estimated_contribution_value": 900,
+                    "user_id": "u1",
+                    "username": "甲",
+                    "scanned_at": "2026-09-14T11:00:00+08:00",
+                },
+            )
+
+        included = RecordQuery.from_query(
+            {"min_estimated_contribution_total": ["2400"]},
+            today=date(2026, 9, 14),
+        )
+        excluded = RecordQuery.from_query(
+            {"min_estimated_contribution_total": ["2401"]},
+            today=date(2026, 9, 14),
+        )
+
+        self.assertEqual(query_records(
+            self.database_path, self.settings_path, included
+        )["total"], 1)
+        self.assertEqual(query_records(
+            self.database_path, self.settings_path, excluded
+        )["total"], 0)
 
     def test_unknown_gender_filter(self) -> None:
         query = RecordQuery.from_query(
@@ -378,8 +429,8 @@ class ContributionViewerTest(unittest.TestCase):
             ["contribution_gap", "estimated_contribution_value"],
         )
         rows = list(csv.reader(io.StringIO(payload.decode("utf-8-sig"))))
-        self.assertEqual(rows[0], ["距前一名", "推测贡献值"])
-        self.assertEqual(rows[1], ["250", "1500"])
+        self.assertEqual(rows[0], ["距前一名", "推测贡献值下限"])
+        self.assertEqual(rows[1], ["250", "≥1500"])
 
     def test_csv_export_includes_charm_amount_and_account_assessment(self) -> None:
         query = RecordQuery.from_query({}, today=date(2026, 9, 14))
@@ -441,6 +492,25 @@ class ContributionViewerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "至少选择"):
             parse_export_columns({"columns": ["user_id,room_id"]})
 
+    def test_summary_column_order_is_allowlisted_completed_and_exported(self) -> None:
+        order = parse_summary_column_order(
+            {"column_order": ["estimated_contribution_total,username,bad,username"]}
+        )
+        self.assertEqual(order[:2], ["estimated_contribution_total", "username"])
+        self.assertEqual(len(order), 10)
+
+        query = RecordQuery.from_query({}, today=date(2026, 9, 14))
+        document = export_records_html(
+            self.database_path,
+            self.settings_path,
+            query,
+            column_order=order,
+        ).decode("utf-8")
+        self.assertIn(
+            "<thead><tr><th>合计推测金额下限</th><th>用户名</th>",
+            document,
+        )
+
     def test_html_export_is_unpaginated_uses_yuan_and_escapes_data(self) -> None:
         with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.execute(
@@ -488,7 +558,8 @@ class ContributionViewerTest(unittest.TestCase):
         self.assertIn('filterForm.addEventListener("input", applyFilters)', document)
         self.assertIn('filterForm.addEventListener("change", applyFilters)', document)
         self.assertIn("navigator.clipboard.writeText(userId)", document)
-        self.assertIn("hellofish-copied-user-ids-v1", document)
+        self.assertIn("copied-user-ids-v1", document)
+        self.assertNotIn("hellofish", document.lower())
         self.assertIn('content: "已复制"', document)
         self.assertIn("position: absolute", document)
         self.assertNotIn("background-image:", document)
@@ -512,6 +583,11 @@ class ContributionViewerTest(unittest.TestCase):
             "<th>用户名</th><th>出现厅</th><th>最近记录</th><th>性别</th>",
             document,
         )
+        self.assertIn("请使用浏览器打开本文件，点击用户名即可复制用户 ID", document)
+        self.assertIn("不推荐直接在微信中查看，微信内无法复制用户 ID", document)
+        self.assertIn("<th>合计推测金额下限</th>", document)
+        self.assertIn('<td class="estimated-total">≥ 150 元</td>', document)
+        self.assertNotIn("hellofish", document.lower())
         self.assertIn("<th>明细时间</th><th>所在厅 / ID</th>", document)
         self.assertIn('class="detail-toggle"', document)
         self.assertIn('data-user-id="u1"', document)

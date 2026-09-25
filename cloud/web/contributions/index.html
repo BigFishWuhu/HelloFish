@@ -5,8 +5,8 @@
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <meta name="color-scheme" content="light" />
         <title>HelloFish · 贡献记录</title>
-        <link rel="stylesheet" href="/styles.css?v=1.3.21" />
-        <script src="/app.js?v=1.3.21" defer></script>
+        <link rel="stylesheet" href="/styles.css?v=1.3.22" />
+        <script src="/app.js?v=1.3.22" defer></script>
     </head>
     <body>
         <section id="login-panel" class="login-panel" aria-label="云端登录">
@@ -35,6 +35,7 @@
             </div>
             <div class="hero-actions">
                 <button id="open-export" class="secondary" type="button">导出</button>
+                <button id="open-column-order" class="secondary" type="button">调整列顺序</button>
                 <button id="open-settings" class="secondary" type="button">隐藏名单设置</button>
                 <button id="open-password" class="secondary" type="button">修改密码</button>
                 <button id="logout" class="secondary" type="button">退出登录</button>
@@ -87,6 +88,10 @@
                     <label for="min-friends">挚友数量至少</label>
                     <input id="min-friends" type="number" min="0" placeholder="不限" />
                 </div>
+                <div class="field compact">
+                    <label id="min-estimated-label" for="min-estimated">合计推测金额下限至少（元）</label>
+                    <input id="min-estimated" type="number" min="0" step="0.1" placeholder="不限" />
+                </div>
                 <div class="field id-field">
                     <label for="room-id">厅 ID</label>
                     <input id="room-id" type="search" placeholder="精确匹配" />
@@ -127,17 +132,7 @@
                 <div class="table-scroll">
                     <table>
                         <thead>
-                            <tr>
-                                <th>用户名</th>
-                                <th>出现厅</th>
-                                <th>最近记录</th>
-                                <th>性别</th>
-                                <th>IP 属地</th>
-                                <th>挚友</th>
-                                <th>财富等级</th>
-                                <th>魅力等级</th>
-                                <th>账号判断</th>
-                            </tr>
+                            <tr id="summary-columns"></tr>
                         </thead>
                         <tbody id="records-body"></tbody>
                     </table>
@@ -152,8 +147,24 @@
                     <button id="next-page" class="secondary" type="button">下一页</button>
                 </footer>
             </section>
-            <p class="footnote">金额按 10 贡献值或魅力值 = 1 元换算。财富金额达到魅力金额的 1.5 倍时标记为高概率真实玩家，否则标记为疑似排挡账号。推测值以本次扫描最后一名为 1；缺失处按后续已知差值平均补算，第 1–3 名取相同值。</p>
+            <p class="footnote">金额按 10 贡献值或魅力值 = 1 元换算。财富金额达到魅力金额的 1.5 倍时标记为高概率真实玩家，否则标记为疑似排挡账号。推测金额均为大于等于（≥）所示数值的下限，并非真实金额；推测以本次扫描最后一名为 1，缺失处按后续已知差值平均补算，第 1–3 名取相同值。</p>
         </main>
+
+        <dialog id="column-order-dialog">
+            <form method="dialog" class="dialog-card column-order-card">
+                <div class="dialog-title">
+                    <div><p class="eyebrow">TABLE LAYOUT</p><h2>调整主列表列顺序</h2></div>
+                    <button class="icon-button" value="cancel" aria-label="关闭">×</button>
+                </div>
+                <p class="dialog-help">使用上下按钮调整顺序。CSV 和静态 HTML 会沿用当前主列表顺序。</p>
+                <div id="column-order-list" class="column-order-list"></div>
+                <div class="dialog-actions">
+                    <button id="reset-column-order" class="secondary" type="button">恢复默认</button>
+                    <button class="secondary" value="cancel">取消</button>
+                    <button id="save-column-order" class="primary" type="button">应用</button>
+                </div>
+            </form>
+        </dialog>
 
         <dialog id="settings-dialog">
             <form method="dialog" class="dialog-card">
@@ -203,7 +214,8 @@
                     <label><input type="checkbox" data-export-column="room_name" checked />厅名称 / ID</label>
                     <label><input type="checkbox" data-export-column="rank" checked />厅内排名</label>
                     <label><input type="checkbox" data-export-column="contribution_gap" checked />距前一名</label>
-                    <label><input type="checkbox" data-export-column="estimated_contribution_value" checked />推测贡献值</label>
+                    <label><input type="checkbox" data-export-column="estimated_contribution_value" checked />单厅推测贡献值下限</label>
+                    <label><input type="checkbox" data-export-column="estimated_contribution_total" checked />合计推测贡献值下限</label>
                     <label><input type="checkbox" data-export-column="username" checked />用户名 / ID</label>
                     <label><input type="checkbox" data-export-column="gender" checked />性别</label>
                     <label><input type="checkbox" data-export-column="ip" checked />IP 属地</label>

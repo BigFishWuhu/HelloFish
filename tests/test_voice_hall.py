@@ -309,6 +309,45 @@ class HallListRecognitionTest(unittest.TestCase):
 
         self.assertEqual(call_order[:3], ["return", "refresh", "capture"])
 
+    def test_regular_scan_restarts_app_and_begins_next_full_cycle(self) -> None:
+        context = SimpleNamespace(
+            tasker=SimpleNamespace(controller=FakeController(), stopping=False)
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            argv = SimpleNamespace(
+                custom_action_param=json.dumps(
+                    {
+                        "database": str(Path(temp_dir) / "voice_hall.sqlite3"),
+                        "state_file": str(Path(temp_dir) / "state.json"),
+                    }
+                )
+            )
+            with (
+                patch.object(
+                    self.scanner,
+                    "_scan_all_halls_once",
+                    side_effect=[2, 0],
+                ) as scan_cycle,
+                patch.object(
+                    self.scanner,
+                    "_restart_target_app",
+                    return_value=True,
+                ) as restart,
+                patch.object(self.scanner, "_log") as log,
+            ):
+                result = self.scanner._run(context, argv)
+
+        self.assertTrue(result)
+        self.assertEqual(scan_cycle.call_count, 2)
+        restart.assert_called_once_with(context)
+        self.assertTrue(
+            any(
+                "开始下一轮完整扫描" in str(argument)
+                for call in log.call_args_list
+                for argument in call.args
+            )
+        )
+
     def test_number_outside_card_column_is_not_a_hall(self) -> None:
         items = [
             ocr("120323", (20, 283, 115, 30)),
@@ -461,15 +500,20 @@ class HallListRecognitionTest(unittest.TestCase):
           <node text="" resource-id="app:id/rv_rank_list" bounds="[0,547][720,1126]" />
           <node text="4" resource-id="app:id/tv_rank" bounds="[13,595][94,627]" />
           <node text="" resource-id="app:id/iv_avatar" bounds="[94,574][167,647]" />
+          <node text="四号用户" resource-id="app:id/tv_nickname" bounds="[194,574][275,606]" />
+          <node text="" resource-id="app:id/iv_gender" bounds="[340,574][370,604]" />
           <node text="ID:40004" resource-id="app:id/tv_user_code" bounds="[194,595][325,627]" />
           <node text="距前一名10" resource-id="app:id/tv_value" bounds="[528,595][685,627]" />
           <node text="5" resource-id="app:id/tv_rank" bounds="[13,695][94,727]" />
           <node text="" resource-id="app:id/iv_avatar" bounds="[94,674][167,747]" />
           <node text="神秘人" resource-id="app:id/tv_nickname" bounds="[194,674][263,707]" />
+          <node text="" resource-id="app:id/iv_gender" bounds="[340,674][370,704]" />
           <node text="ID:50005" resource-id="app:id/tv_user_code" bounds="[194,707][325,739]" />
           <node text="距前一名5" resource-id="app:id/tv_value" bounds="[528,695][685,727]" />
           <node text="6" resource-id="app:id/tv_rank" bounds="[13,795][94,827]" />
           <node text="" resource-id="app:id/iv_avatar" bounds="[94,774][167,847]" />
+          <node text="六号用户" resource-id="app:id/tv_nickname" bounds="[194,774][275,806]" />
+          <node text="" resource-id="app:id/iv_gender" bounds="[340,774][370,804]" />
           <node text="ID:60006" resource-id="app:id/tv_user_code" bounds="[194,795][325,827]" />
           <node text="距前一名3" resource-id="app:id/tv_value" bounds="[528,795][685,827]" />
         </hierarchy>"""
@@ -477,12 +521,16 @@ class HallListRecognitionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = Path(temp_dir) / "voice_hall.sqlite3"
             records: list[dict[str, object]] = []
+            leaderboard_image = np.zeros((1280, 720, 3), dtype=np.uint8)
+            leaderboard_image[574:604, 340:370] = (235, 238, 190)
+            leaderboard_image[674:704, 340:370] = (246, 205, 230)
+            leaderboard_image[774:804, 340:370] = (235, 238, 190)
             with (
                 patch.object(self.scanner, "_open_contribution_panel"),
                 patch.object(
                     self.scanner,
                     "_capture_ocr",
-                    return_value=(None, [ocr("房间贡献榜", (330, 55, 150, 35))]),
+                    return_value=(leaderboard_image, [ocr("房间贡献榜", (330, 55, 150, 35))]),
                 ),
                 patch.object(self.scanner, "_dump_ui_hierarchy", return_value=hierarchy),
                 patch.object(self.scanner, "_record_user") as record_user,
@@ -516,8 +564,9 @@ class HallListRecognitionTest(unittest.TestCase):
                 [9, 4, 1],
             )
             mystery = next(row for row in saved if row["user_id"] == "50005")
-            self.assertIsNone(mystery["username"])
-            self.assertIsNone(mystery["gender"])
+            self.assertEqual(mystery["username"], "神秘人")
+            self.assertEqual(mystery["gender"], "女")
+            self.assertEqual(mystery["gender_source"], "leaderboard-icon:♀")
 
     def test_profile_id_comes_from_copy_control_not_ocr(self) -> None:
         hierarchy = """<?xml version='1.0' encoding='UTF-8'?>
@@ -922,6 +971,46 @@ class HallListRecognitionTest(unittest.TestCase):
         self.assertEqual(persisted["rank"], 6)
         self.assertEqual(persisted["contribution_gap"], 3_426)
         self.assertEqual(persisted["estimated_contribution_value"], 20_000)
+
+    def test_record_user_skips_close_friend_flow_when_disabled(self) -> None:
+        controller = FakeController()
+        self.scanner.controller = controller
+        items = [
+            ocr("ID:23342974", (46, 630, 152, 28)),
+            ocr("测试用户", (80, 560, 150, 25)),
+            ocr("IP:浙江", (540, 624, 100, 25)),
+            ocr("120", (45, 680, 70, 30)),
+            ocr("88", (130, 680, 70, 30)),
+        ]
+        records = []
+
+        with (
+            patch.object(self.scanner, "_copy_profile_id", return_value="23342974"),
+            patch.object(self.scanner, "_capture_ocr", return_value=(None, items)),
+            patch.object(self.scanner, "_scan_close_friend_count") as scan_friends,
+            patch(
+                "voice_hall.VoiceHallDatabase.upsert_contribution",
+                return_value=False,
+            ),
+            patch.object(self.scanner, "_log"),
+            patch("voice_hall.time.sleep"),
+        ):
+            self.scanner._record_user(
+                context=SimpleNamespace(),
+                room_id="120323",
+                room_name="测试厅",
+                rank=6,
+                click_point=(130, 700),
+                output_path=Path("result.sqlite3"),
+                records=records,
+                processed_users=set(),
+                delay=0.1,
+                unknown_gender_as_male=True,
+                collect_close_friend_count=False,
+            )
+
+        scan_friends.assert_not_called()
+        self.assertIsNone(records[-1]["close_friend_count"])
 
     def test_gender_uses_icon_color_on_copy_button_row(self) -> None:
         hierarchy = """<?xml version='1.0'?>
@@ -2099,6 +2188,13 @@ class HallListRecognitionTest(unittest.TestCase):
                 for argument in call.args
             )
         )
+        self.assertTrue(
+            any(
+                "统计挚友数量=True" in str(argument)
+                for call in log.call_args_list
+                for argument in call.args
+            )
+        )
 
     def test_interface_defaults_contribution_rank_limit_to_100(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
@@ -2123,6 +2219,7 @@ class HallListRecognitionTest(unittest.TestCase):
         self.assertIn("SkipScannedToday", scan_task["option"])
         self.assertIn("ScanGenderFilter", scan_task["option"])
         self.assertIn("RecordGenders", scan_task["option"])
+        self.assertIn("CollectCloseFriends", scan_task["option"])
         self.assertEqual(rank_limit["inputs"][0]["default"], "100")
         self.assertEqual(
             pipeline["VoiceHallScanStart"]["custom_action_param"][
@@ -2131,6 +2228,7 @@ class HallListRecognitionTest(unittest.TestCase):
             100,
         )
         scan_params = pipeline["VoiceHallScanStart"]["custom_action_param"]
+        self.assertTrue(scan_params["collect_close_friend_count"])
         self.assertEqual(scan_params["skip_room_names"], "")
         skip_rooms = interface["option"]["ScanGenderFilter"]
         self.assertEqual(
@@ -2154,6 +2252,7 @@ class HallListRecognitionTest(unittest.TestCase):
         )
         skip_today = interface["option"]["SkipScannedToday"]
         record_genders = interface["option"]["RecordGenders"]
+        collect_close_friends = interface["option"]["CollectCloseFriends"]
         self.assertEqual(skip_today["default_case"], "No")
         self.assertEqual(record_genders["type"], "checkbox")
         self.assertEqual(
@@ -2161,6 +2260,22 @@ class HallListRecognitionTest(unittest.TestCase):
             ["Male", "Female", "Unknown"],
         )
         self.assertEqual(record_genders["min_count"], 1)
+        self.assertEqual(collect_close_friends["type"], "switch")
+        self.assertEqual(collect_close_friends["default_case"], "Yes")
+        self.assertEqual(
+            [case["label"] for case in collect_close_friends["cases"]],
+            ["开启", "关闭"],
+        )
+        self.assertTrue(
+            collect_close_friends["cases"][0]["pipeline_override"]
+            ["VoiceHallScanStart"]["custom_action_param"]
+            ["collect_close_friend_count"]
+        )
+        self.assertFalse(
+            collect_close_friends["cases"][1]["pipeline_override"]
+            ["VoiceHallScanStart"]["custom_action_param"]
+            ["collect_close_friend_count"]
+        )
         self.assertEqual(
             [case["label"] for case in record_genders["cases"]],
             ["男", "女", "未知"],
@@ -2286,7 +2401,7 @@ class HallListRecognitionTest(unittest.TestCase):
         self.assertFalse(debug_task["default_check"])
         self.assertEqual(
             debug_task["option"],
-            ["SingleHallDebugConfig"],
+            ["SingleHallDebugConfig", "CollectCloseFriends"],
         )
         debug_option = interface["option"]["SingleHallDebugConfig"]
         self.assertEqual(
@@ -2306,6 +2421,7 @@ class HallListRecognitionTest(unittest.TestCase):
         debug_params = pipeline["VoiceHallSingleDebugStart"]["custom_action_param"]
         self.assertTrue(debug_params["single_hall"])
         self.assertEqual(debug_params["max_users_per_hall"], 100)
+        self.assertTrue(debug_params["collect_close_friend_count"])
 
     def test_interface_starts_contribution_viewer_on_project_load(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
@@ -2482,6 +2598,7 @@ class HallListRecognitionTest(unittest.TestCase):
                         "state_file": str(state_path),
                         "max_hall_pages": 1,
                         "action_delay": 0,
+                        "collect_close_friend_count": False,
                     }
                 )
             )
@@ -2524,6 +2641,12 @@ class HallListRecognitionTest(unittest.TestCase):
             self.assertTrue(result)
             refresh.assert_called_once_with(context, 0)
             self.assertEqual(scan.call_count, 2)
+            self.assertTrue(
+                all(
+                    call.kwargs["collect_close_friend_count"] is False
+                    for call in scan.call_args_list
+                )
+            )
             self.assertEqual(enter.call_count, 3)
             self.assertEqual(
                 [call.args[1] for call in sleep.call_args_list],

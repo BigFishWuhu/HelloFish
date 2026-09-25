@@ -363,8 +363,9 @@ def _estimate_contribution_values(
 
 def _find_contribution_row_data(
     hierarchy: str,
+    image: Any = None,
 ) -> dict[int, dict[str, Any]]:
-    """Read leaderboard row metadata from the accessibility hierarchy only."""
+    """Read lightweight leaderboard metadata without opening profile pages."""
     root = _parse_android_hierarchy(hierarchy)
     if root is None:
         return {}
@@ -373,6 +374,8 @@ def _find_contribution_row_data(
     anchors: list[tuple[int, tuple[int, int, int, int]]] = []
     gaps: list[tuple[int, tuple[int, int, int, int]]] = []
     ids: list[tuple[str, tuple[int, int, int, int]]] = []
+    usernames: list[tuple[str, tuple[int, int, int, int]]] = []
+    gender_icons: list[tuple[tuple[int, int, int, int], str, str]] = []
     value_suffixes = (
         ":id/tv_contribution",
         ":id/tv_contribution_num",
@@ -426,6 +429,20 @@ def _find_contribution_row_data(
         ) and re.search(r"\d{4,12}", text):
             text = re.search(r"\d{4,12}", text).group(0)
             ids.append((text, box))
+        if resource_id.endswith(":id/tv_nickname") and text:
+            usernames.append((text, box))
+        if resource_id.endswith(":id/iv_gender") and image is not None:
+            x, y, width, height = box
+            try:
+                pixels = np.asarray(image)
+                roi = pixels[y : y + height, x : x + width, :3]
+                gender = _classify_gender_color_points(roi)
+                if gender == "男":
+                    gender_icons.append((box, "男", "leaderboard-icon:♂"))
+                elif gender == "女":
+                    gender_icons.append((box, "女", "leaderboard-icon:♀"))
+            except (AttributeError, IndexError, TypeError, ValueError):
+                pass
 
     rows: dict[int, dict[str, Any]] = {}
     row_anchors = [(rank, box) for rank, box in ranks] + anchors
@@ -441,7 +458,7 @@ def _find_contribution_row_data(
             anchor_x = _center(rank_box)[0]
             id_candidate = min(
                 (
-                    (abs(_center(box)[0] - anchor_x), value)
+                    (abs(_center(box)[0] - anchor_x), value, box)
                     for value, box in ids
                     if center_y < _center(box)[1] <= center_y + 180
                     and abs(_center(box)[0] - anchor_x) <= 100
@@ -451,15 +468,45 @@ def _find_contribution_row_data(
         else:
             id_candidate = min(
                 (
-                    (abs(_center(box)[1] - center_y), value)
+                    (abs(_center(box)[1] - center_y), value, box)
                     for value, box in ids
                     if abs(_center(box)[1] - center_y) <= 70
                 ),
                 default=None,
             )
+        reference_y = (
+            _center(id_candidate[2])[1] if id_candidate else center_y
+        )
+        username_candidate = min(
+            (
+                (abs(_center(box)[1] - reference_y), value)
+                for value, box in usernames
+                if abs(_center(box)[1] - reference_y) <= 70
+                and (
+                    rank > 3
+                    or abs(_center(box)[0] - _center(rank_box)[0]) <= 180
+                )
+            ),
+            default=None,
+        )
+        gender_candidate = min(
+            (
+                (abs(_center(box)[1] - reference_y), gender, source)
+                for box, gender, source in gender_icons
+                if abs(_center(box)[1] - reference_y) <= 70
+                and (
+                    rank > 3
+                    or abs(_center(box)[0] - _center(rank_box)[0]) <= 180
+                )
+            ),
+            default=None,
+        )
         rows[rank] = {
             "contribution_gap": candidate[1] if candidate else None,
             "user_id": id_candidate[1] if id_candidate else None,
+            "username": username_candidate[1] if username_candidate else None,
+            "gender": gender_candidate[1] if gender_candidate else None,
+            "gender_source": gender_candidate[2] if gender_candidate else None,
             "row_y": center_y,
         }
     return rows
@@ -974,6 +1021,9 @@ class ContributionScanner(CustomAction):
         skipped_room_ids = _normalize_setting_list(params.get("skip_room_ids"))
         skipped_room_names = _normalize_setting_list(params.get("skip_room_names"))
         record_genders = _selected_record_genders(params)
+        collect_close_friend_count = _setting_enabled(
+            params.get("collect_close_friend_count", True)
+        )
         skip_scanned_today = bool(params.get("skip_scanned_today", False)) or (
             getattr(argv, "custom_action_name", "") == SKIP_SCANNED_CUSTOM_ACTION
         )
@@ -1024,6 +1074,7 @@ class ContributionScanner(CustomAction):
             f"跳过厅数={len(skipped_room_ids)}",
             f"跳过厅名称数={len(skipped_room_names)}",
             f"记录性别={','.join(sorted(record_genders))}",
+            f"统计挚友数量={collect_close_friend_count}",
             f"跳过今日已扫描厅={skip_scanned_today}",
         )
         self._check_stopping(context)
@@ -1069,11 +1120,69 @@ class ContributionScanner(CustomAction):
                 include_top3=include_top3,
                 unknown_gender_as_male=unknown_gender_as_male,
                 record_genders=record_genders,
+                collect_close_friend_count=collect_close_friend_count,
             )
             if opened:
                 self._log(f"单厅调试完成：厅 {room_id}，输出：{output_path}")
             return opened
 
+        while True:
+            scanned_halls = self._scan_all_halls_once(
+                context=context,
+                output_path=output_path,
+                state_path=state_path,
+                records=records,
+                processed_users=processed_users,
+                scan_day=self._now()[:10],
+                delay=delay,
+                max_halls=max_halls,
+                max_hall_pages=max_hall_pages,
+                max_contribution_pages=max_contribution_pages,
+                max_users_per_hall=max_users_per_hall,
+                include_top3=include_top3,
+                unknown_gender_as_male=unknown_gender_as_male,
+                skipped_room_ids=skipped_room_ids,
+                skipped_room_names=skipped_room_names,
+                record_genders=record_genders,
+                collect_close_friend_count=collect_close_friend_count,
+                skip_scanned_today=skip_scanned_today,
+            )
+            if scanned_halls is None:
+                return False
+            self._log(
+                f"扫描完成，本轮到访 {scanned_halls} 个厅，输出：{output_path}"
+            )
+            if scanned_halls == 0:
+                self._log("本轮没有完成任何厅，停止循环以避免反复重启")
+                return True
+            self._check_stopping(context)
+            if not self._restart_target_app(context):
+                self._log("整轮扫描完成，但双鱼部落重启失败，任务结束")
+                return True
+            self._log("双鱼部落已重新打开，开始下一轮完整扫描")
+
+    def _scan_all_halls_once(
+        self,
+        *,
+        context: Context,
+        output_path: Path,
+        state_path: Path,
+        records: list[dict[str, Any]],
+        processed_users: set[tuple[str, str]],
+        scan_day: str,
+        delay: float,
+        max_halls: int,
+        max_hall_pages: int,
+        max_contribution_pages: int,
+        max_users_per_hall: int,
+        include_top3: bool,
+        unknown_gender_as_male: bool,
+        skipped_room_ids: set[str],
+        skipped_room_names: set[str],
+        record_genders: set[str],
+        collect_close_friend_count: bool,
+        skip_scanned_today: bool,
+    ) -> int | None:
         state = _load_json(state_path, {"visited_halls": {}})
         visited_halls = state.setdefault("visited_halls", {})
         if not isinstance(visited_halls, dict):
@@ -1083,7 +1192,7 @@ class ContributionScanner(CustomAction):
         if not self._ensure_target_app_and_hall_list(context):
             if not self._recover_to_hall_list(context, max_attempts=5):
                 self._log("无法打开双鱼部落或恢复到厅列表页，任务结束")
-                return False
+                return None
         self._refresh_hall_list_order(context, delay)
 
         new_hall_count = 0
@@ -1183,6 +1292,7 @@ class ContributionScanner(CustomAction):
                     include_top3=include_top3,
                     unknown_gender_as_male=unknown_gender_as_male,
                     record_genders=record_genders,
+                    collect_close_friend_count=collect_close_friend_count,
                 )
 
                 if not opened:
@@ -1210,6 +1320,7 @@ class ContributionScanner(CustomAction):
                             include_top3=include_top3,
                             unknown_gender_as_male=unknown_gender_as_male,
                             record_genders=record_genders,
+                            collect_close_friend_count=collect_close_friend_count,
                         )
                     else:
                         self._log(f"厅 {hall_id} 未能重新进入，取消本次重试")
@@ -1229,7 +1340,7 @@ class ContributionScanner(CustomAction):
 
                 if not self._return_to_hall_list(context, max_attempts=4):
                     self._log("扫描后没有回到厅列表页，停止任务")
-                    return False
+                    return None
 
             if max_halls and new_hall_count >= max_halls:
                 break
@@ -1244,8 +1355,7 @@ class ContributionScanner(CustomAction):
                 self._log("厅列表到底或页面未变化，停止遍历")
                 break
 
-        self._log(f"扫描完成，本轮到访 {new_hall_count} 个厅，输出：{output_path}")
-        return True
+        return new_hall_count
 
     def _scan_contribution(
         self,
@@ -1261,6 +1371,7 @@ class ContributionScanner(CustomAction):
         include_top3: bool,
         unknown_gender_as_male: bool,
         record_genders: set[str] | None = None,
+        collect_close_friend_count: bool = True,
     ) -> bool:
         self._log(f"厅 {room_id} 正在打开贡献榜")
         self._open_contribution_panel(context, delay)
@@ -1300,7 +1411,7 @@ class ContributionScanner(CustomAction):
             hierarchy = self._dump_ui_hierarchy()
             hierarchy_top3, hierarchy_rows = _find_contribution_targets(hierarchy)
             rank_rows = hierarchy_rows or self._find_rank_rows(items)
-            page_rank_data = _find_contribution_row_data(hierarchy)
+            page_rank_data = _find_contribution_row_data(hierarchy, image)
             if not (
                 self._is_contribution_panel(items)
                 or _is_contribution_hierarchy(hierarchy)
@@ -1337,6 +1448,7 @@ class ContributionScanner(CustomAction):
                         delay=delay,
                         unknown_gender_as_male=unknown_gender_as_male,
                         record_genders=record_genders,
+                        collect_close_friend_count=collect_close_friend_count,
                         contribution_gap=hall_rank_data.get(rank, {}).get("contribution_gap"),
                         leaderboard_user_id=hall_rank_data.get(rank, {}).get("user_id"),
                         from_leaderboard=True,
@@ -1375,6 +1487,7 @@ class ContributionScanner(CustomAction):
                     delay=delay,
                     unknown_gender_as_male=unknown_gender_as_male,
                     record_genders=record_genders,
+                    collect_close_friend_count=collect_close_friend_count,
                     contribution_gap=hall_rank_data.get(rank, {}).get("contribution_gap"),
                     leaderboard_user_id=hall_rank_data.get(rank, {}).get("user_id"),
                     from_leaderboard=True,
@@ -1436,6 +1549,9 @@ class ContributionScanner(CustomAction):
                     "estimated_contribution_value"
                 ),
                 "user_id": user_id,
+                "username": data.get("username"),
+                "gender": data.get("gender"),
+                "gender_source": data.get("gender_source"),
                 "scanned_at": scanned_at,
                 "leaderboard_only": True,
             }
@@ -1497,6 +1613,9 @@ class ContributionScanner(CustomAction):
             "scanned_at",
         ):
             existing[field] = leaderboard_record.get(field)
+        for field in ("username", "gender", "gender_source"):
+            if existing.get(field) is None and leaderboard_record.get(field) is not None:
+                existing[field] = leaderboard_record[field]
 
     def _scroll_contribution(
         self,
@@ -1545,6 +1664,7 @@ class ContributionScanner(CustomAction):
         estimated_contribution_value: int | None = None,
         leaderboard_user_id: str | None = None,
         from_leaderboard: bool = False,
+        collect_close_friend_count: bool = True,
     ) -> bool:
         self._check_stopping(context)
         self.controller.post_click(click_point[0], click_point[1]).wait()
@@ -1635,24 +1755,26 @@ class ContributionScanner(CustomAction):
             self._sleep(context, delay * 0.6)
             self._log(f"排名 {rank} 用户性别={gender} 不在记录性别中，不记录")
             return True
-        close_friend_count = self._scan_close_friend_count(
-            context,
-            profile_items,
-            profile_hierarchy,
-            delay,
-        )
-        if close_friend_count is None:
-            self._log(f"排名 {rank} 的挚友数量尚未识别，等待页面稳定后重试")
-            self._sleep(context, PROFILE_DETAIL_RETRY_SECONDS)
-            retry_image, retry_items = self._capture_ocr(context)
-            retry_hierarchy = self._dump_ui_hierarchy()
-            if retry_items or retry_hierarchy:
-                close_friend_count = self._scan_close_friend_count(
-                    context,
-                    retry_items,
-                    retry_hierarchy,
-                    delay,
-                )
+        close_friend_count = None
+        if collect_close_friend_count:
+            close_friend_count = self._scan_close_friend_count(
+                context,
+                profile_items,
+                profile_hierarchy,
+                delay,
+            )
+            if close_friend_count is None:
+                self._log(f"排名 {rank} 的挚友数量尚未识别，等待页面稳定后重试")
+                self._sleep(context, PROFILE_DETAIL_RETRY_SECONDS)
+                retry_image, retry_items = self._capture_ocr(context)
+                retry_hierarchy = self._dump_ui_hierarchy()
+                if retry_items or retry_hierarchy:
+                    close_friend_count = self._scan_close_friend_count(
+                        context,
+                        retry_items,
+                        retry_hierarchy,
+                        delay,
+                    )
         self._check_stopping(context)
         wealth_level, charm_level = self._retry_missing_profile_levels(
             context,

@@ -244,13 +244,20 @@ class VoiceHallDatabase:
             """
             INSERT INTO contributions (
                 room_id, room_name, rank, contribution_gap,
-                estimated_contribution_value, user_id, scanned_at, scan_date
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                estimated_contribution_value, user_id, username, gender,
+                gender_source, scanned_at, scan_date
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(room_id, user_id, scan_date) DO UPDATE SET
                 room_name = excluded.room_name,
                 rank = excluded.rank,
                 contribution_gap = excluded.contribution_gap,
                 estimated_contribution_value = excluded.estimated_contribution_value,
+                username = COALESCE(contributions.username, excluded.username),
+                gender = COALESCE(contributions.gender, excluded.gender),
+                gender_source = COALESCE(
+                    contributions.gender_source,
+                    excluded.gender_source
+                ),
                 scanned_at = excluded.scanned_at
             """,
             (
@@ -260,6 +267,9 @@ class VoiceHallDatabase:
                 record.get("contribution_gap"),
                 record.get("estimated_contribution_value"),
                 str(record.get("user_id", "")),
+                record.get("username"),
+                record.get("gender"),
+                record.get("gender_source"),
                 str(record.get("scanned_at", "")),
                 scan_date,
             ),

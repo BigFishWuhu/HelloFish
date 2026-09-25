@@ -9,6 +9,7 @@ const controls = {
     includeUnknown: $("#include-unknown"),
     gender: $("#gender"),
     minFriends: $("#min-friends"),
+    minEstimated: $("#min-estimated"),
     roomId: $("#room-id"),
     userId: $("#user-id"),
     username: $("#username"),
@@ -16,13 +17,50 @@ const controls = {
     sort: $("#sort"),
 };
 
-const state = {page: 1, pageSize: 50, total: 0, records: []};
+const defaultColumnOrder = [
+    "username", "rooms", "scanned_at", "gender", "ip",
+    "close_friend_count", "estimated_contribution_total",
+    "wealth_level", "charm_level", "account_assessment",
+];
+const columnLabels = {
+    username: "用户名",
+    rooms: "出现厅",
+    scanned_at: "最近记录",
+    gender: "性别",
+    ip: "IP 属地",
+    close_friend_count: "挚友",
+    estimated_contribution_total: "合计推测金额下限",
+    wealth_level: "财富等级",
+    charm_level: "魅力等级",
+    account_assessment: "账号判断",
+};
+const exportColumnsBySummaryColumn = {
+    username: ["username"],
+    rooms: ["room_name"],
+    scanned_at: ["scanned_at", "scan_date"],
+    gender: ["gender"],
+    ip: ["ip"],
+    close_friend_count: ["close_friend_count"],
+    estimated_contribution_total: ["estimated_contribution_total"],
+    wealth_level: ["wealth_level", "wealth_min_contribution"],
+    charm_level: ["charm_level", "charm_min_value"],
+    account_assessment: ["account_assessment"],
+};
+const state = {
+    page: 1,
+    pageSize: 50,
+    total: 0,
+    records: [],
+    columnOrder: [...defaultColumnOrder],
+};
 const storageKey = "hellofish-contribution-filters-v1";
 const exportStorageKey = "hellofish-contribution-export-columns-v1";
+const columnOrderStorageKey = "hellofish-contribution-column-order-v1";
 const copiedUserStorageKey = "hellofish-copied-user-ids-v1";
 const copiedUserTtlMs = 12 * 60 * 60 * 1000;
 const copiedUsers = new Map();
 let toastTimer;
+let draftColumnOrder = [];
 
 function localIsoDate(value = new Date()) {
     const parts = new Intl.DateTimeFormat("en-US", {
@@ -113,6 +151,68 @@ function persistFilters() {
     localStorage.setItem(storageKey, JSON.stringify(values));
 }
 
+function normalizeColumnOrder(value) {
+    const requested = Array.isArray(value)
+        ? value.filter((column, index) => columnLabels[column] && value.indexOf(column) === index)
+        : [];
+    return [...requested, ...defaultColumnOrder.filter((column) => !requested.includes(column))];
+}
+
+function restoreColumnOrder() {
+    try {
+        state.columnOrder = normalizeColumnOrder(
+            JSON.parse(localStorage.getItem(columnOrderStorageKey) || "null"),
+        );
+    } catch (_) {
+        localStorage.removeItem(columnOrderStorageKey);
+        state.columnOrder = [...defaultColumnOrder];
+    }
+}
+
+function renderColumnOrderEditor() {
+    const list = $("#column-order-list");
+    list.replaceChildren();
+    draftColumnOrder.forEach((column, index) => {
+        const item = document.createElement("div");
+        item.className = "column-order-item";
+        item.dataset.column = column;
+        const position = document.createElement("strong");
+        position.textContent = String(index + 1);
+        const label = document.createElement("span");
+        label.textContent = column === "estimated_contribution_total"
+            ? (controls.unit.value === "yuan" ? "合计推测金额下限" : "合计推测贡献值下限")
+            : columnLabels[column];
+        const up = document.createElement("button");
+        up.type = "button";
+        up.dataset.move = "up";
+        up.textContent = "↑";
+        up.disabled = index === 0;
+        up.setAttribute("aria-label", `上移${label.textContent}`);
+        const down = document.createElement("button");
+        down.type = "button";
+        down.dataset.move = "down";
+        down.textContent = "↓";
+        down.disabled = index === draftColumnOrder.length - 1;
+        down.setAttribute("aria-label", `下移${label.textContent}`);
+        item.append(position, label, up, down);
+        list.append(item);
+    });
+}
+
+function openColumnOrder() {
+    draftColumnOrder = [...state.columnOrder];
+    renderColumnOrderEditor();
+    $("#column-order-dialog").showModal();
+}
+
+function saveColumnOrder() {
+    state.columnOrder = normalizeColumnOrder(draftColumnOrder);
+    localStorage.setItem(columnOrderStorageKey, JSON.stringify(state.columnOrder));
+    renderRecords();
+    $("#column-order-dialog").close();
+    showToast("主列表及导出列顺序已更新");
+}
+
 function updateDateControls() {
     $("#recent-control").classList.toggle("hidden", controls.dateMode.value !== "recent");
     $("#custom-control").classList.toggle("hidden", controls.dateMode.value !== "custom");
@@ -145,6 +245,12 @@ function formatCharmThreshold(charmValue) {
 
 function formatContributionValue(contribution) {
     return formatThreshold(contribution);
+}
+
+function formatEstimatedValue(contribution) {
+    return contribution === null || contribution === undefined
+        ? "???"
+        : `≥ ${formatContributionValue(contribution)}`;
 }
 
 function formatScanTime(value) {
@@ -218,6 +324,19 @@ function userCopyButton(record) {
 function renderRecords() {
     const body = $("#records-body");
     body.replaceChildren();
+    const header = $("#summary-columns");
+    header.replaceChildren();
+    state.columnOrder.forEach((column) => {
+        const heading = document.createElement("th");
+        heading.dataset.column = column;
+        heading.textContent = column === "estimated_contribution_total"
+            ? (controls.unit.value === "yuan" ? "合计推测金额下限" : "合计推测贡献值下限")
+            : columnLabels[column];
+        header.append(heading);
+    });
+    $("#min-estimated-label").textContent = controls.unit.value === "yuan"
+        ? "合计推测金额下限至少（元）"
+        : "合计推测贡献值下限至少";
     for (const record of state.records) {
         const appearances = Array.isArray(record.appearances) && record.appearances.length
             ? record.appearances
@@ -254,30 +373,34 @@ function renderRecords() {
             assessment.classList.add("likely-real");
         }
 
-        const values = [
-            user,
-            roomSummary,
-            formatScanTime(record.scanned_at),
-            record.gender,
-            record.ip,
-            record.close_friend_count,
-            wealth,
-            charm,
-            assessment,
-        ];
-        values.forEach((value, index) => {
+        const values = {
+            username: user,
+            rooms: roomSummary,
+            scanned_at: formatScanTime(record.scanned_at),
+            gender: record.gender,
+            ip: record.ip,
+            close_friend_count: record.close_friend_count,
+            estimated_contribution_total: formatEstimatedValue(record.estimated_contribution_total),
+            wealth_level: wealth,
+            charm_level: charm,
+            account_assessment: assessment,
+        };
+        state.columnOrder.forEach((column) => {
+            const value = values[column];
             const cell = document.createElement("td");
             if (value instanceof Node) cell.append(value);
             else cell.textContent = escapeText(value);
-            if (index === 6) cell.className = "wealth";
-            if (index === 7) cell.className = "charm";
+            cell.dataset.column = column;
+            if (column === "estimated_contribution_total") cell.className = "estimated-total";
+            if (column === "wealth_level") cell.className = "wealth";
+            if (column === "charm_level") cell.className = "charm";
             row.append(cell);
         });
 
         const detailRow = document.createElement("tr");
         detailRow.className = "user-detail-row hidden";
         const detailCell = document.createElement("td");
-        detailCell.colSpan = 9;
+        detailCell.colSpan = state.columnOrder.length;
         const detailWrap = document.createElement("div");
         detailWrap.className = "appearance-details";
         const detailTable = document.createElement("table");
@@ -289,7 +412,7 @@ function renderRecords() {
             "厅",
             "排名",
             controls.unit.value === "yuan" ? "距前一名金额" : "距前一名贡献值",
-            controls.unit.value === "yuan" ? "推测金额" : "推测贡献值",
+            controls.unit.value === "yuan" ? "推测金额下限" : "推测贡献值下限",
             "性别",
             "IP 属地",
             "挚友",
@@ -316,7 +439,7 @@ function renderRecords() {
                 room,
                 appearance.rank,
                 formatContributionValue(appearance.contribution_gap),
-                formatContributionValue(appearance.estimated_contribution_value),
+                formatEstimatedValue(appearance.estimated_contribution_value),
                 appearance.gender,
                 appearance.ip,
                 appearance.close_friend_count,
@@ -349,6 +472,11 @@ function renderRecords() {
 }
 
 function queryParams() {
+    const minimumEstimated = controls.minEstimated.value === ""
+        ? ""
+        : String(Math.ceil(Number(controls.minEstimated.value) * (
+            controls.unit.value === "yuan" ? 10 : 1
+        )));
     const params = new URLSearchParams({
         date_mode: controls.dateMode.value,
         days: controls.recentDays.value || "7",
@@ -358,6 +486,7 @@ function queryParams() {
         include_unknown: String(controls.includeUnknown.checked),
         gender: controls.gender.value,
         min_close_friend_count: controls.minFriends.value,
+        min_estimated_contribution_total: minimumEstimated,
         room_id: controls.roomId.value.trim(),
         user_id: controls.userId.value.trim(),
         username: controls.username.value.trim(),
@@ -370,6 +499,27 @@ function queryParams() {
 
 function exportColumnControls() {
     return [...document.querySelectorAll("[data-export-column]")];
+}
+
+function reorderExportColumns() {
+    const grid = $(".column-grid");
+    const controlsByColumn = new Map(
+        exportColumnControls().map((control) => [control.dataset.exportColumn, control]),
+    );
+    const orderedColumns = state.columnOrder.flatMap(
+        (column) => exportColumnsBySummaryColumn[column] || [],
+    );
+    const placed = new Set();
+    for (const column of orderedColumns) {
+        const control = controlsByColumn.get(column);
+        if (control) {
+            grid.append(control.closest("label"));
+            placed.add(column);
+        }
+    }
+    for (const [column, control] of controlsByColumn) {
+        if (!placed.has(column)) grid.append(control.closest("label"));
+    }
 }
 
 function restoreExportColumns() {
@@ -387,6 +537,7 @@ function restoreExportColumns() {
 }
 
 function openExport() {
+    reorderExportColumns();
     restoreExportColumns();
     $("#export-status").textContent = "";
     $("#export-dialog").showModal();
@@ -406,6 +557,7 @@ function startExport() {
     params.delete("page");
     params.delete("page_size");
     params.set("columns", columns.join(","));
+    params.set("column_order", state.columnOrder.join(","));
     const download = document.createElement("a");
     download.href = `/api/export?${params.toString()}`;
     download.hidden = true;
@@ -421,6 +573,7 @@ function startHtmlExport() {
     const params = new URLSearchParams(queryParams());
     params.delete("page");
     params.delete("page_size");
+    params.set("column_order", state.columnOrder.join(","));
     const download = document.createElement("a");
     download.href = `/api/export.html?${params.toString()}`;
     download.hidden = true;
@@ -512,6 +665,14 @@ async function saveSettings() {
 
 controls.dateMode.addEventListener("change", updateDateControls);
 controls.unit.addEventListener("change", () => {
+    const previousUnit = controls.unit.dataset.previousUnit || "yuan";
+    if (controls.minEstimated.value !== "" && previousUnit !== controls.unit.value) {
+        const value = Number(controls.minEstimated.value);
+        controls.minEstimated.value = String(
+            controls.unit.value === "contribution" ? value * 10 : value / 10,
+        );
+    }
+    controls.unit.dataset.previousUnit = controls.unit.value;
     persistFilters();
     renderRecords();
 });
@@ -522,6 +683,7 @@ $("#apply-filters").addEventListener("click", () => {
 [
     controls.minWealth,
     controls.minFriends,
+    controls.minEstimated,
     controls.roomId,
     controls.userId,
     controls.username,
@@ -543,6 +705,25 @@ $("#next-page").addEventListener("click", () => {
 });
 $("#open-settings").addEventListener("click", openSettings);
 $("#save-settings").addEventListener("click", saveSettings);
+$("#open-column-order").addEventListener("click", openColumnOrder);
+$("#save-column-order").addEventListener("click", saveColumnOrder);
+$("#reset-column-order").addEventListener("click", () => {
+    draftColumnOrder = [...defaultColumnOrder];
+    renderColumnOrderEditor();
+});
+$("#column-order-list").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-move]");
+    if (!button) return;
+    const column = button.closest("[data-column]").dataset.column;
+    const index = draftColumnOrder.indexOf(column);
+    const target = button.dataset.move === "up" ? index - 1 : index + 1;
+    if (target < 0 || target >= draftColumnOrder.length) return;
+    [draftColumnOrder[index], draftColumnOrder[target]] = [
+        draftColumnOrder[target],
+        draftColumnOrder[index],
+    ];
+    renderColumnOrderEditor();
+});
 $("#open-export").addEventListener("click", openExport);
 $("#start-export").addEventListener("click", startExport);
 $("#start-html-export").addEventListener("click", startHtmlExport);
@@ -554,5 +735,7 @@ $("#clear-all-columns").addEventListener("click", () => {
 });
 
 restoreFilters();
+controls.unit.dataset.previousUnit = controls.unit.value;
+restoreColumnOrder();
 restoreCopiedUsers();
 loadRecords();

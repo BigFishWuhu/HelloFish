@@ -40,7 +40,8 @@ EXPORT_COLUMNS = {
     "room_name": "厅名称 / ID",
     "rank": "厅内排名",
     "contribution_gap": "距前一名",
-    "estimated_contribution_value": "推测贡献值",
+    "estimated_contribution_value": "推测贡献值下限",
+    "estimated_contribution_total": "合计推测贡献值下限",
     "username": "用户名 / ID",
     "gender": "性别",
     "ip": "IP 属地",
@@ -57,6 +58,7 @@ DEFAULT_EXPORT_COLUMNS = (
     "rank",
     "contribution_gap",
     "estimated_contribution_value",
+    "estimated_contribution_total",
     "username",
     "gender",
     "ip",
@@ -65,6 +67,19 @@ DEFAULT_EXPORT_COLUMNS = (
     "charm_level",
     "account_assessment",
 )
+SUMMARY_COLUMNS = {
+    "username": "用户名",
+    "rooms": "出现厅",
+    "scanned_at": "最近记录",
+    "gender": "性别",
+    "ip": "IP 属地",
+    "close_friend_count": "挚友",
+    "estimated_contribution_total": "合计推测金额下限",
+    "wealth_level": "财富等级",
+    "charm_level": "魅力等级",
+    "account_assessment": "账号判断",
+}
+DEFAULT_SUMMARY_COLUMN_ORDER = tuple(SUMMARY_COLUMNS)
 
 
 def clear_runtime_logs(project_root: Path = PROJECT_ROOT) -> tuple[int, list[str]]:
@@ -293,6 +308,7 @@ class RecordQuery:
     include_unknown: bool
     gender: str
     min_close_friend_count: int | None
+    min_estimated_contribution_total: int | None
     room_id: str
     user_id: str
     username: str
@@ -328,6 +344,15 @@ class RecordQuery:
             if raw_minimum_friends == ""
             else _parse_int(raw_minimum_friends, 0, 0, 1_000_000)
         )
+        raw_minimum_estimated = _single(
+            query,
+            "min_estimated_contribution_total",
+        )
+        minimum_estimated = (
+            None
+            if raw_minimum_estimated == ""
+            else _parse_int(raw_minimum_estimated, 0, 0, 10**15)
+        )
         gender = _single(query, "gender", "all")
         if gender not in {"all", "male", "female", "unknown"}:
             gender = "all"
@@ -338,6 +363,7 @@ class RecordQuery:
             include_unknown=_single(query, "include_unknown", "true").lower() == "true",
             gender=gender,
             min_close_friend_count=minimum_friends,
+            min_estimated_contribution_total=minimum_estimated,
             room_id=_single(query, "room_id")[:100],
             user_id=_single(query, "user_id")[:100],
             username=_single(query, "username")[:100],
@@ -451,7 +477,7 @@ def query_records(
             parameters,
         ).fetchall()
 
-    grouped_records = _group_records(rows)
+    grouped_records = _filter_grouped_records(_group_records(rows), record_query)
     total = len(grouped_records)
     offset = (record_query.page - 1) * record_query.page_size
     records = grouped_records[offset : offset + record_query.page_size]
@@ -501,7 +527,32 @@ def _group_records(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
             {str(item.get("room_id") or "") for item in appearances}
         )
         group["appearance_count"] = len(appearances)
+        estimated_values = [
+            item.get("estimated_contribution_value")
+            for item in appearances
+            if item.get("estimated_contribution_value") is not None
+        ]
+        group["estimated_contribution_total"] = (
+            sum(int(value) for value in estimated_values)
+            if estimated_values
+            else None
+        )
     return list(groups.values())
+
+
+def _filter_grouped_records(
+    records: list[dict[str, Any]],
+    record_query: RecordQuery,
+) -> list[dict[str, Any]]:
+    minimum = record_query.min_estimated_contribution_total
+    if minimum is None:
+        return records
+    return [
+        record
+        for record in records
+        if record.get("estimated_contribution_total") is not None
+        and int(record["estimated_contribution_total"]) >= minimum
+    ]
 
 
 def parse_export_columns(query: dict[str, list[str]]) -> list[str]:
@@ -515,6 +566,23 @@ def parse_export_columns(query: dict[str, list[str]]) -> list[str]:
     if not columns:
         raise ValueError("至少选择一个有效的导出列")
     return columns
+
+
+def parse_summary_column_order(query: dict[str, list[str]]) -> list[str]:
+    raw_order = _single(query, "column_order")
+    requested = raw_order.split(",") if raw_order else []
+    order = [
+        column
+        for column in requested
+        if column in SUMMARY_COLUMNS
+    ]
+    order = list(dict.fromkeys(order))
+    order.extend(
+        column
+        for column in DEFAULT_SUMMARY_COLUMN_ORDER
+        if column not in order
+    )
+    return order
 
 
 def _format_yuan_amount(value: Any) -> str:
@@ -568,6 +636,12 @@ def _export_value(record: sqlite3.Row, column: str) -> Any:
             record["wealth_min_contribution"],
             record["charm_min_value"],
         ) or "???"
+    if column in {
+        "estimated_contribution_value",
+        "estimated_contribution_total",
+    }:
+        value = record[column]
+        return "???" if value is None else f"≥{value}"
     value = record[column]
     if value is None and column in {
         "wealth_level",
@@ -622,8 +696,11 @@ def export_records_csv(
     record_query: RecordQuery,
     columns: list[str],
 ) -> bytes:
-    records = _group_records(
-        _query_export_records(database_path, settings_path, record_query)
+    records = _filter_grouped_records(
+        _group_records(
+            _query_export_records(database_path, settings_path, record_query)
+        ),
+        record_query,
     )
 
     output = io.StringIO(newline="")
@@ -659,6 +736,8 @@ body { margin: 0; min-width: 320px; }
 h1 { margin: 0; font-size: 46px; line-height: 1; letter-spacing: 0; }
 .subtitle { margin: 14px 0 0; color: #d5efeb; }
 main { position: relative; z-index: 1; padding: 26px clamp(14px, 4vw, 56px) 48px; }
+.usage-notice { margin: 0 0 18px; border: 1px solid #e7bb55; border-radius: 8px; padding: 13px 16px; color: #71480a; background: #fff4d6; font-size: 14px; line-height: 1.65; }
+.usage-notice strong { color: #9a3d16; }
 .summary { display: flex; align-items: center; flex-wrap: wrap; gap: 24px; padding: 0 4px 18px; }
 .summary div { display: grid; min-width: 130px; }
 .summary strong { font-size: 20px; }
@@ -720,22 +799,24 @@ body { position: relative; overflow-x: hidden; background-color: #fbf1df; }
 .filters > :nth-child(6) { grid-column: 12 / 13; }
 .filters > :nth-child(7) { grid-column: 1 / 3; }
 .filters > :nth-child(8) { grid-column: 3 / 5; }
-.filters > :nth-child(9) { grid-column: 5 / 9; min-width: 0; }
-.filters > :nth-child(10) { grid-column: 9 / 13; }
+.filters > :nth-child(9) { grid-column: 5 / 7; }
+.filters > :nth-child(10) { grid-column: 7 / 10; min-width: 0; }
+.filters > :nth-child(11) { grid-column: 10 / 13; }
 .filters > .field,
 .filters > .filter-actions { min-width: 0; }
 .table-panel tbody td, table tbody td { color: #8a9897; }
-table > tbody > tr.user-summary-row > td:nth-child(1) { color: #17343b; font-size: 14px; font-weight: 800; }
-table > tbody > tr.user-summary-row > td:nth-child(7) { color: #9a5b08; font-size: 14px; font-weight: 900; }
-table > tbody > tr.user-summary-row > td:nth-child(1) .user-copy { color: #17343b; }
-@media (max-width: 720px) { .filters { grid-template-columns: 1fr 1fr; } .filters > * { grid-column: auto !important; min-width: 0; } .filters > :nth-child(9) { grid-column: 1 / -1 !important; } .filters > :nth-child(10) { grid-column: 1 / -1 !important; } }
+table > tbody > tr.user-summary-row > td.username { color: #17343b; font-size: 14px; font-weight: 800; }
+table > tbody > tr.user-summary-row > td.estimated-total,
+table > tbody > tr.user-summary-row > td.wealth { color: #9a5b08; font-size: 14px; font-weight: 900; }
+table > tbody > tr.user-summary-row > td.username .user-copy { color: #17343b; }
+@media (max-width: 720px) { .filters { grid-template-columns: 1fr 1fr; } .filters > * { grid-column: auto !important; min-width: 0; } .filters > :nth-child(10) { grid-column: 1 / -1 !important; } .filters > :nth-child(11) { grid-column: 1 / -1 !important; } }
 @media print { :root { background: white; } .hero { print-color-adjust: exact; } main { padding: 18px 0; } .panel { border-radius: 0; box-shadow: none; } }
 """.strip()
 
 
 STATIC_EXPORT_JS = """
 const toast = document.querySelector("#toast");
-const copiedUserStorageKey = "hellofish-copied-user-ids-v1";
+const copiedUserStorageKey = "copied-user-ids-v1";
 const copiedUserTtlMs = 12 * 60 * 60 * 1000;
 const copiedUsers = new Map();
 let toastTimer;
@@ -813,6 +894,11 @@ function fieldValue(name) {
 
 function rowMatches(row) {
     if (fieldValue("user_id") && row.dataset.userId !== fieldValue("user_id")) return false;
+    const minimumEstimatedYuan = fieldValue("min_estimated_yuan");
+    if (minimumEstimatedYuan && (
+        row.dataset.estimatedTotal === ""
+        || Number(row.dataset.estimatedTotal) < Number(minimumEstimatedYuan) * 10
+    )) return false;
     const appearances = JSON.parse(row.dataset.appearances || "[]");
     return appearances.some((appearance) => {
         const startTime = fieldValue("start_time");
@@ -894,6 +980,10 @@ def _format_html_yuan(contribution: Any) -> str:
     return html.escape(_format_yuan_amount(float(contribution) / 10).replace("元", " 元"))
 
 
+def _format_html_estimated_yuan(contribution: Any) -> str:
+    return "???" if contribution is None else f"≥ {_format_html_yuan(contribution)}"
+
+
 def _static_filter_gender(value: Any) -> str:
     gender = str(value or "").strip()
     if gender == "男":
@@ -948,9 +1038,13 @@ def export_records_html(
     settings_path: Path,
     record_query: RecordQuery,
     columns: list[str] | None = None,
+    column_order: list[str] | None = None,
 ) -> bytes:
-    rows = _group_records(
-        _query_export_records(database_path, settings_path, record_query)
+    rows = _filter_grouped_records(
+        _group_records(
+            _query_export_records(database_path, settings_path, record_query)
+        ),
+        record_query,
     )
     # Static HTML mirrors the viewer's fixed user-summary layout. Column choices
     # remain a CSV concern; validate explicit input for API compatibility only.
@@ -960,6 +1054,16 @@ def export_records_html(
         columns = [column for column in columns if column in EXPORT_COLUMNS]
         if not columns:
             raise ValueError("至少选择一个有效的导出列")
+    summary_order = [
+        column
+        for column in (column_order or DEFAULT_SUMMARY_COLUMN_ORDER)
+        if column in SUMMARY_COLUMNS
+    ]
+    summary_order.extend(
+        column
+        for column in DEFAULT_SUMMARY_COLUMN_ORDER
+        if column not in summary_order
+    )
     table_rows: list[str] = []
     for group_index, record in enumerate(rows):
         appearances = record["appearances"]
@@ -971,6 +1075,11 @@ def export_records_html(
             "room-id": str(record["room_id"] or ""),
             "user-id": str(record["user_id"] or ""),
             "username": str(record["username"] or ""),
+            "estimated-total": (
+                ""
+                if record["estimated_contribution_total"] is None
+                else str(record["estimated_contribution_total"])
+            ),
         }
         filter_attributes = " ".join(
             f'data-{name}="{html.escape(value, quote=True)}"'
@@ -1011,24 +1120,28 @@ def export_records_html(
             f'<button type="button" class="detail-toggle" aria-expanded="false" '
             f'data-summary="{_html_text(detail_summary)}">{_html_text(detail_summary)}</button>'
         )
-        cells = (
-            _html_user_button(record, show_name=True),
-            toggle,
-            _format_html_scan_time(record["scanned_at"]),
-            _html_text(record["gender"]),
-            _html_text(record["ip"]),
-            _html_text(record["close_friend_count"]),
-            (
+        cell_map = {
+            "username": (_html_user_button(record, show_name=True), "username"),
+            "rooms": (toggle, ""),
+            "scanned_at": (_format_html_scan_time(record["scanned_at"]), ""),
+            "gender": (_html_text(record["gender"]), ""),
+            "ip": (_html_text(record["ip"]), ""),
+            "close_friend_count": (_html_text(record["close_friend_count"]), ""),
+            "estimated_contribution_total": (
+                _format_html_estimated_yuan(record["estimated_contribution_total"]),
+                "estimated-total",
+            ),
+            "wealth_level": ((
                 f'{_html_text(record["wealth_level"], "???")}'
                 f'<small>（{_format_html_yuan(record["wealth_min_contribution"])}）</small>'
-            ),
-            (
+            ), "wealth"),
+            "charm_level": ((
                 f'{_html_text(record["charm_level"], "???")}'
                 f'<small>（{_format_html_yuan(record["charm_min_value"])}）</small>'
-            ),
-            assessment_markup,
-        )
-        cell_classes = {6: "wealth", 7: "charm"}
+            ), "charm"),
+            "account_assessment": (assessment_markup, ""),
+        }
+        cells = [cell_map[column] for column in summary_order]
         detail_rows = "".join(
             "<tr>"
             f'<td>{_format_html_scan_time(item["scanned_at"])}</td>'
@@ -1036,7 +1149,7 @@ def export_records_html(
             f'<small>ID {_html_text(item["room_id"])}</small></div></td>'
             f'<td>{_html_text(item["rank"])}</td>'
             f'<td>{_format_html_yuan(item["contribution_gap"])}</td>'
-            f'<td>{_format_html_yuan(item["estimated_contribution_value"])}</td>'
+            f'<td>{_format_html_estimated_yuan(item["estimated_contribution_value"])}</td>'
             f'<td>{_html_text(item["gender"])}</td>'
             f'<td>{_html_text(item["ip"])}</td>'
             f'<td>{_html_text(item["close_friend_count"])}</td>'
@@ -1052,15 +1165,15 @@ def export_records_html(
             '<tr class="user-detail-row hidden"><td colspan="'
             f'{len(cells)}"><div class="appearance-details"><table class="appearance-table">'
             '<thead><tr><th>明细时间</th><th>所在厅 / ID</th><th>厅内排名</th>'
-            '<th>距前一名金额</th><th>推测金额</th><th>性别</th><th>IP 属地</th>'
+            '<th>距前一名金额</th><th>推测金额下限</th><th>性别</th><th>IP 属地</th>'
             '<th>挚友</th><th>财富等级</th><th>魅力等级</th><th>账号判断</th></tr></thead>'
             f'<tbody>{detail_rows}</tbody></table></div></td></tr>'
         )
         table_rows.append(
             f'<tr class="user-summary-row" data-group="{group_index}" {filter_attributes}>'
             + "".join(
-                f'<td class="{cell_classes.get(index, "")}">{value}</td>'
-                for index, value in enumerate(cells)
+                f'<td class="{cell_class}">{value}</td>'
+                for value, cell_class in cells
             )
             + "</tr>"
             + detail_markup
@@ -1069,22 +1182,27 @@ def export_records_html(
     date_summary = _record_query_summary(record_query)
     exported_at = datetime.now(timezone.utc).astimezone(CHINA_TZ).strftime("%Y-%m-%d %H:%M:%S")
     table_content = "".join(table_rows)
+    summary_headers = "".join(
+        f"<th>{_html_text(SUMMARY_COLUMNS[column])}</th>"
+        for column in summary_order
+    )
     document = f"""<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'" />
-<title>HelloFish 贡献记录 {date_summary}</title>
+<title>贡献记录 {date_summary}</title>
 <style>{STATIC_EXPORT_CSS}</style>
 </head>
 <body>
 <header class="hero">
-<p class="eyebrow">HELLOFISH DATA EXPORT</p>
+<p class="eyebrow">DATA EXPORT</p>
 <h1>贡献记录</h1>
 <p class="subtitle">静态导出 · 按用户 ID 合并 · 可展开各厅明细</p>
 </header>
 <main>
+<aside class="usage-notice" role="note"><strong>查看提示：</strong>请使用浏览器打开本文件，点击用户名即可复制用户 ID。不推荐直接在微信中查看，微信内无法复制用户 ID。</aside>
 <section class="summary">
 <div><strong id="record-total">{len(rows)}</strong><span>位用户</span></div>
 <div><strong>{date_summary}</strong><span>数据范围</span></div>
@@ -1097,6 +1215,7 @@ def export_records_html(
 <label class="check-field"><input name="include_unknown" type="checkbox" checked />显示财富等级为 ??? 的记录</label>
 <div class="field"><label for="filter-gender">性别</label><select id="filter-gender" name="gender"><option value="all">不限</option><option value="male">男</option><option value="female">女</option><option value="unknown">未知</option></select></div>
 <div class="field"><label for="filter-min-friends">挚友数量至少</label><input id="filter-min-friends" name="min_friends" type="number" min="0" placeholder="不限" /></div>
+<div class="field"><label for="filter-min-estimated">合计推测金额下限至少（元）</label><input id="filter-min-estimated" name="min_estimated_yuan" type="number" min="0" step="0.1" placeholder="不限" /></div>
 <div class="field"><label for="filter-room-id">厅 ID</label><input id="filter-room-id" name="room_id" type="search" placeholder="精确匹配" /></div>
 <div class="field"><label for="filter-user-id">用户 ID</label><input id="filter-user-id" name="user_id" type="search" placeholder="精确匹配" /></div>
 <div class="field wide"><label for="filter-username">用户名</label><input id="filter-username" name="username" type="search" placeholder="包含匹配" /></div>
@@ -1105,13 +1224,13 @@ def export_records_html(
 <section class="panel">
 <div class="table-scroll">
 <table>
-<thead><tr><th>用户名</th><th>出现厅</th><th>最近记录</th><th>性别</th><th>IP 属地</th><th>挚友</th><th>财富等级</th><th>魅力等级</th><th>账号判断</th></tr></thead>
+<thead><tr>{summary_headers}</tr></thead>
 <tbody id="records-body">{table_content}</tbody>
 </table>
 <div id="empty-state" class="empty{' hidden' if table_rows else ''}">当前条件下没有贡献记录</div>
 </div>
 </section>
-<p class="footnote">可在本地筛选导出文件中包含的记录；金额按 10 贡献值或魅力值 = 1 元换算。财富金额达到魅力金额的 1.5 倍时标记为高概率真实玩家，否则标记为疑似排挡账号。推测值以本次扫描最后一名为 1；缺失处按后续已知差值平均补算，第 1–3 名取相同值。</p>
+<p class="footnote">可在本地筛选导出文件中包含的记录；金额按 10 贡献值或魅力值 = 1 元换算。财富金额达到魅力金额的 1.5 倍时标记为高概率真实玩家，否则标记为疑似排挡账号。推测金额均为大于等于（≥）所示数值的下限，并非真实金额；推测以本次扫描最后一名为 1，缺失处按后续已知差值平均补算，第 1–3 名取相同值。</p>
 </main>
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 <script>{STATIC_EXPORT_JS}</script>
@@ -1237,11 +1356,13 @@ class ContributionViewerHandler(BaseHTTPRequestHandler):
                 raw_query = parse_qs(parsed.query, keep_blank_values=True)
                 query = RecordQuery.from_query(raw_query)
                 columns = parse_export_columns(raw_query) if "columns" in raw_query else None
+                column_order = parse_summary_column_order(raw_query)
                 payload = export_records_html(
                     self.server.database_path,
                     self.server.settings_path,
                     query,
                     columns,
+                    column_order,
                 )
                 self._send_bytes(
                     HTTPStatus.OK,
