@@ -79,12 +79,17 @@ class CloudServer(ThreadingHTTPServer):
         self.users_path = Path(users_path or self.data_root / "users.json")
         self._sessions: dict[str, str] = {}
         self._lock = threading.RLock()
+        self._cleaned_databases: set[Path] = set()
         self.users = self._load_users()
         if initial_users:
             for username, password in initial_users.items():
                 self.users.setdefault(username, _password_hash(password))
             self._save_users()
         self.data_root.mkdir(parents=True, exist_ok=True)
+        accounts_root = self.data_root / "accounts"
+        if accounts_root.is_dir():
+            for database in accounts_root.glob("*.sqlite3"):
+                self._prepare_database(database)
         super().__init__(address, CloudHandler)
 
     def _load_users(self) -> dict[str, str]:
@@ -180,8 +185,24 @@ class CloudServer(ThreadingHTTPServer):
         root.mkdir(parents=True, exist_ok=True)
         database = root / f"{safe_name}.sqlite3"
         settings = root / f"{safe_name}.settings.json"
-        VoiceHallDatabase(database).initialize()
+        self._prepare_database(database)
         return database, settings
+
+    def _prepare_database(self, database_path: Path) -> None:
+        database_path = database_path.resolve()
+        with self._lock:
+            if database_path in self._cleaned_databases:
+                return
+            database = VoiceHallDatabase(database_path)
+            database.initialize()
+            purged = database.purge_old_data()
+            self._cleaned_databases.add(database_path)
+        print(
+            "[HelloFishCloud] 已清理 7 天前数据："
+            f"{database_path.name}，贡献记录 {purged['contributions']} 条，"
+            f"等级样本 {purged['level_samples']} 条",
+            flush=True,
+        )
 
 
 class CloudHandler(BaseHTTPRequestHandler):
@@ -317,7 +338,10 @@ class CloudHandler(BaseHTTPRequestHandler):
             for record in records:
                 if not isinstance(record, dict):
                     raise ValueError("记录格式错误")
-                database.upsert_contribution(record)
+                if record.get("leaderboard_only") is True:
+                    database.upsert_leaderboard_contribution(record)
+                else:
+                    database.upsert_contribution(record)
                 saved += 1
         except (ValueError, sqlite3.Error, OSError) as exc:
             self._error(HTTPStatus.BAD_REQUEST, str(exc))

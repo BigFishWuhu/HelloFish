@@ -33,7 +33,8 @@
         "args": [
             "-u",
             "agent/contribution_viewer.py",
-            "--serve"
+            "--serve",
+            "--clear-logs"
         ],
         "cwd": ".",
         "name": "HelloFishContributionViewer"

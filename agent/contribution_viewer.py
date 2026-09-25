@@ -66,6 +66,45 @@ DEFAULT_EXPORT_COLUMNS = (
     "account_assessment",
 )
 
+
+def clear_runtime_logs(project_root: Path = PROJECT_ROOT) -> tuple[int, list[str]]:
+    """Remove logs from previous MXU runs without touching persistent data."""
+    project_root = project_root.resolve()
+    search_roots = (
+        project_root,
+        project_root / "data",
+        project_root / "debug",
+        project_root / "assets" / "debug",
+    )
+    candidates: set[Path] = set()
+    for search_root in search_roots:
+        if not search_root.is_dir():
+            continue
+        if search_root == project_root:
+            candidates.update(search_root.glob("*.log"))
+            candidates.update(search_root.glob("*.log.*"))
+        else:
+            candidates.update(search_root.rglob("*.log"))
+            candidates.update(search_root.rglob("*.log.*"))
+
+    cleared = 0
+    failures: list[str] = []
+    for path in sorted(candidates):
+        try:
+            resolved = path.resolve()
+            if project_root not in resolved.parents:
+                continue
+            path.unlink(missing_ok=True)
+            cleared += 1
+        except OSError:
+            try:
+                path.write_text("", encoding="utf-8")
+                cleared += 1
+            except OSError as exc:
+                failures.append(f"{path}: {exc}")
+    return cleared, failures
+
+
 _SETTINGS_LOCK = threading.Lock()
 _SERVER_LOCK = threading.Lock()
 _SERVER: "ContributionViewerServer | None" = None
@@ -1095,7 +1134,14 @@ class ContributionViewerServer(ThreadingHTTPServer):
         self.database_path = database_path
         self.settings_path = settings_path
         self.web_root = web_root
-        VoiceHallDatabase(database_path).initialize()
+        database = VoiceHallDatabase(database_path)
+        database.initialize()
+        purged = database.purge_old_data()
+        print(
+            "[ContributionViewer] 已清理 7 天前数据："
+            f"贡献记录 {purged['contributions']} 条，等级样本 {purged['level_samples']} 条",
+            flush=True,
+        )
         super().__init__(server_address, ContributionViewerHandler)
 
 
@@ -1428,6 +1474,11 @@ def serve_until_owner_exits(
 def _main() -> None:
     parser = argparse.ArgumentParser(description="HelloFish contribution viewer")
     parser.add_argument("--serve", action="store_true", help="run the HTTP service")
+    parser.add_argument(
+        "--clear-logs",
+        action="store_true",
+        help="clear logs left by previous MXU runs before starting",
+    )
     parser.add_argument("--owner-pid", type=int, help="exit when this process exits")
     parser.add_argument(
         "--runtime-path",
@@ -1438,6 +1489,11 @@ def _main() -> None:
     args = parser.parse_args()
     if not args.serve:
         parser.error("需要指定 --serve")
+    if args.clear_logs:
+        cleared, failures = clear_runtime_logs()
+        print(f"[ContributionViewer] 已清理上次运行日志：{cleared} 个文件", flush=True)
+        for failure in failures:
+            print(f"[ContributionViewer] 日志清理失败：{failure}", flush=True)
     if is_server_running(runtime_path=args.runtime_path):
         print(
             f"[ContributionViewer] 后台服务已在运行：{get_server_url(args.runtime_path)}",

@@ -11,12 +11,14 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "cloud"))
 from server import CloudServer  # noqa: E402
+from voice_hall_storage import VoiceHallDatabase  # noqa: E402
 
 
 class CloudServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
+        self.root = root
         self.server = CloudServer(
             ("127.0.0.1", 0),
             data_root=root / "data",
@@ -63,12 +65,104 @@ class CloudServiceTest(unittest.TestCase):
         self.assertEqual(json.loads(body)["saved"], 1)
         self.assertEqual(self.call("/api/records", headers=headers)[0], 200)
 
+    def test_leaderboard_only_upload_preserves_cloud_profile_details(self) -> None:
+        credentials = base64.b64encode(b"alice:secret").decode("ascii")
+        headers = {
+            "Authorization": f"Basic {credentials}",
+            "Content-Type": "application/json",
+        }
+        detailed = {
+            "room_id": "100",
+            "room_name": "测试厅",
+            "rank": 2,
+            "user_id": "u1",
+            "username": "完整用户",
+            "gender": "男",
+            "wealth_level": 20,
+            "scanned_at": "2026-09-16T10:00:00+08:00",
+        }
+        status, _, _ = self.call(
+            "/api/records/upload", {"records": [detailed]}, headers, "POST"
+        )
+        self.assertEqual(status, 200)
+
+        leaderboard_only = {
+            "room_id": "100",
+            "room_name": "测试厅",
+            "rank": 4,
+            "contribution_gap": 80,
+            "estimated_contribution_value": 900,
+            "user_id": "u1",
+            "scanned_at": "2026-09-16T10:05:00+08:00",
+            "leaderboard_only": True,
+        }
+        status, _, _ = self.call(
+            "/api/records/upload",
+            {"records": [leaderboard_only]},
+            headers,
+            "POST",
+        )
+        self.assertEqual(status, 200)
+
+        status, _, body = self.call(
+            "/api/records?date_mode=custom&start_date=2026-09-16&end_date=2026-09-16",
+            headers=headers,
+        )
+        self.assertEqual(status, 200)
+        record = json.loads(body)["records"][0]
+        self.assertEqual(record["username"], "完整用户")
+        self.assertEqual(record["gender"], "男")
+        self.assertEqual(record["wealth_level"], 20)
+        self.assertEqual(record["rank"], 4)
+        self.assertEqual(record["estimated_contribution_value"], 900)
+
     def test_static_assets_disable_caching_and_version_the_app_script(self) -> None:
         status, headers, body = self.call("/")
         self.assertEqual(status, 200)
         self.assertEqual(headers["Cache-Control"], "no-store, no-cache, must-revalidate, max-age=0")
         self.assertIn(b"/styles.css?v=", body)
         self.assertIn(b"/app.js?v=", body)
+
+    def test_login_page_can_remember_and_restore_password(self) -> None:
+        status, _, page = self.call("/")
+        self.assertEqual(status, 200)
+        self.assertIn(b'id="remember-password"', page)
+
+        status, _, script = self.call("/app.js")
+        self.assertEqual(status, 200)
+        self.assertIn(b"hellofish-cloud-login-v1", script)
+        self.assertIn(b"restoreLoginCredentials();", script)
+        self.assertIn(
+            b"persistLoginCredentials(currentUsername, payload.password);",
+            script,
+        )
+
+    def test_cloud_startup_purges_existing_account_databases(self) -> None:
+        data_root = self.root / "existing-cloud-data"
+        database_path = data_root / "accounts" / "existing.sqlite3"
+        database = VoiceHallDatabase(database_path)
+        database.upsert_contribution(
+            {
+                "room_id": "100",
+                "user_id": "expired",
+                "scanned_at": "2020-01-01T12:00:00+08:00",
+            }
+        )
+
+        server = CloudServer(
+            ("127.0.0.1", 0),
+            data_root=data_root,
+            web_root=(
+                Path(__file__).resolve().parents[1]
+                / "cloud"
+                / "web"
+                / "contributions"
+            ),
+            initial_users={"alice": "secret"},
+        )
+        server.server_close()
+
+        self.assertEqual(database.load_contributions(), [])
 
     def test_authenticated_user_can_export_static_html(self) -> None:
         credentials = base64.b64encode(b"alice:secret").decode("ascii")

@@ -521,12 +521,17 @@ class ContributionViewerTest(unittest.TestCase):
         web_root = self.root / "html-export-web"
         web_root.mkdir()
         web_root.joinpath("index.html").write_text("viewer", encoding="utf-8")
-        server = ContributionViewerServer(
-            ("127.0.0.1", 0),
-            self.database_path,
-            self.settings_path,
-            web_root,
-        )
+        with patch.object(
+            VoiceHallDatabase,
+            "purge_old_data",
+            return_value={"contributions": 0, "level_samples": 0},
+        ):
+            server = ContributionViewerServer(
+                ("127.0.0.1", 0),
+                self.database_path,
+                self.settings_path,
+                web_root,
+            )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         url = (
@@ -552,12 +557,17 @@ class ContributionViewerTest(unittest.TestCase):
         web_root = self.root / "html-export-selected-web"
         web_root.mkdir()
         web_root.joinpath("index.html").write_text("viewer", encoding="utf-8")
-        server = ContributionViewerServer(
-            ("127.0.0.1", 0),
-            self.database_path,
-            self.settings_path,
-            web_root,
-        )
+        with patch.object(
+            VoiceHallDatabase,
+            "purge_old_data",
+            return_value={"contributions": 0, "level_samples": 0},
+        ):
+            server = ContributionViewerServer(
+                ("127.0.0.1", 0),
+                self.database_path,
+                self.settings_path,
+                web_root,
+            )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         url = (
@@ -654,6 +664,26 @@ class ContributionViewerTest(unittest.TestCase):
         self.assertIn("--serve", command)
         self.assertEqual(server_running.call_count, 2)
         self.assertTrue(log_path.is_file())
+
+    def test_mxu_startup_log_cleanup_only_removes_log_files(self) -> None:
+        paths = [
+            self.root / "maafw.log",
+            self.root / "data" / "voice_hall_agent.log",
+            self.root / "debug" / "maafw.bak.1.log",
+            self.root / "assets" / "debug" / "nested" / "worker.log.1",
+        ]
+        for path in paths:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("old log", encoding="utf-8")
+        database = self.root / "data" / "voice_hall.sqlite3"
+        database.write_text("keep", encoding="utf-8")
+
+        cleared, failures = contribution_viewer.clear_runtime_logs(self.root)
+
+        self.assertEqual(cleared, len(paths))
+        self.assertEqual(failures, [])
+        self.assertTrue(all(not path.exists() for path in paths))
+        self.assertEqual(database.read_text(encoding="utf-8"), "keep")
 
     def test_process_probe_recognizes_the_current_process(self) -> None:
         self.assertTrue(contribution_viewer._process_exists(os.getpid()))

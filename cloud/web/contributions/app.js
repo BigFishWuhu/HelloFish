@@ -20,10 +20,50 @@ const state = {page: 1, pageSize: 50, total: 0, records: []};
 const storageKey = "hellofish-contribution-filters-v1";
 const exportStorageKey = "hellofish-contribution-export-columns-v1";
 const copiedUserStorageKey = "hellofish-copied-user-ids-v1";
+const loginStorageKey = "hellofish-cloud-login-v1";
 const copiedUserTtlMs = 12 * 60 * 60 * 1000;
 const copiedUsers = new Map();
 let toastTimer;
 let setupMode = false;
+let currentUsername = "";
+
+function restoreLoginCredentials() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(loginStorageKey) || "null");
+        if (!saved || typeof saved.username !== "string" || typeof saved.password !== "string") {
+            return;
+        }
+        $("#login-username").value = saved.username;
+        $("#login-password").value = saved.password;
+        $("#remember-password").checked = true;
+    } catch (_) {
+        localStorage.removeItem(loginStorageKey);
+    }
+}
+
+function persistLoginCredentials(username, password) {
+    try {
+        if ($("#remember-password").checked) {
+            localStorage.setItem(loginStorageKey, JSON.stringify({username, password}));
+        } else {
+            localStorage.removeItem(loginStorageKey);
+        }
+    } catch (_) {
+        // Login should still work when local storage is unavailable.
+    }
+}
+
+function updateRememberedPassword(username, password) {
+    if (!$("#remember-password").checked) return;
+    try {
+        const saved = JSON.parse(localStorage.getItem(loginStorageKey) || "null");
+        if (saved && saved.username === username) {
+            localStorage.setItem(loginStorageKey, JSON.stringify({username, password}));
+        }
+    } catch (_) {
+        localStorage.removeItem(loginStorageKey);
+    }
+}
 
 function localIsoDate(value = new Date()) {
     const parts = new Intl.DateTimeFormat("en-US", {
@@ -515,6 +555,7 @@ function hideLogin() {
 async function checkAuth() {
     const response = await fetch("/api/auth/me");
     const data = await response.json();
+    currentUsername = data.authenticated ? String(data.username || "") : "";
     if (!data.authenticated) showLogin(Boolean(data.setup_required));
     else hideLogin();
     return Boolean(data.authenticated);
@@ -604,6 +645,7 @@ async function savePassword() {
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "修改密码失败");
+        updateRememberedPassword(currentUsername, newPassword);
         status.textContent = "密码已修改";
         setTimeout(() => $("password-dialog").close(), 500);
     } catch (error) {
@@ -674,6 +716,8 @@ $("#login-form").addEventListener("submit", async (event) => {
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || (setupMode ? "设置失败" : "登录失败"));
+        currentUsername = String(data.username || payload.username).trim();
+        persistLoginCredentials(currentUsername, payload.password);
         status.textContent = "";
         hideLogin();
         await loadRecords();
@@ -683,11 +727,13 @@ $("#login-form").addEventListener("submit", async (event) => {
 });
 $("#logout").addEventListener("click", async () => {
     await fetch("/api/auth/logout", {method: "POST"});
+    currentUsername = "";
     showLogin();
 });
 
 restoreFilters();
 restoreCopiedUsers();
+restoreLoginCredentials();
 checkAuth().then((authenticated) => {
     if (authenticated) loadRecords();
 }).catch(() => {

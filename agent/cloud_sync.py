@@ -58,7 +58,17 @@ class CloudSyncClient:
         )
 
     def upload(self, record: Mapping[str, Any]) -> dict[str, Any]:
-        payload = json.dumps({"records": [dict(record)]}, ensure_ascii=False).encode("utf-8")
+        return self.upload_many([record])
+
+    def upload_many(self, records: list[Mapping[str, Any]]) -> dict[str, Any]:
+        if not records:
+            return {"saved": 0}
+        if len(records) > 500:
+            raise ValueError("单次云端上传不能超过 500 条记录")
+        payload = json.dumps(
+            {"records": [dict(record) for record in records]},
+            ensure_ascii=False,
+        ).encode("utf-8")
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",

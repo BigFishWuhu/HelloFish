@@ -25,6 +25,14 @@ class CloudSyncConfigTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             CloudSyncClient(config)
 
+    def test_batch_upload_rejects_more_than_server_limit(self) -> None:
+        client = CloudSyncClient(
+            CloudSyncConfig(enabled=True, url="https://example.test")
+        )
+        self.assertEqual(client.upload_many([]), {"saved": 0})
+        with self.assertRaisesRegex(ValueError, "500"):
+            client.upload_many([{}] * 501)
+
 
 if __name__ == "__main__":
     unittest.main()

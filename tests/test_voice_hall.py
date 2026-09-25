@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from ctypes import c_char_p, c_int64, c_void_p
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -450,6 +451,73 @@ class HallListRecognitionTest(unittest.TestCase):
         self.assertEqual(rows[3]["estimated_contribution_value"], 26)
         self.assertEqual(rows[2]["estimated_contribution_value"], 26)
         self.assertEqual(rows[1]["estimated_contribution_value"], 26)
+
+    def test_normal_scan_estimates_all_seen_users_after_hall_finishes(self) -> None:
+        controller = FakeController()
+        self.scanner.controller = controller
+        hierarchy = """<?xml version='1.0'?>
+        <hierarchy>
+          <node text="房间贡献榜" selected="true" bounds="[333,55][463,95]" />
+          <node text="" resource-id="app:id/rv_rank_list" bounds="[0,547][720,1126]" />
+          <node text="4" resource-id="app:id/tv_rank" bounds="[13,595][94,627]" />
+          <node text="" resource-id="app:id/iv_avatar" bounds="[94,574][167,647]" />
+          <node text="ID:40004" resource-id="app:id/tv_user_code" bounds="[194,595][325,627]" />
+          <node text="距前一名10" resource-id="app:id/tv_value" bounds="[528,595][685,627]" />
+          <node text="5" resource-id="app:id/tv_rank" bounds="[13,695][94,727]" />
+          <node text="" resource-id="app:id/iv_avatar" bounds="[94,674][167,747]" />
+          <node text="神秘人" resource-id="app:id/tv_nickname" bounds="[194,674][263,707]" />
+          <node text="ID:50005" resource-id="app:id/tv_user_code" bounds="[194,707][325,739]" />
+          <node text="距前一名5" resource-id="app:id/tv_value" bounds="[528,695][685,727]" />
+          <node text="6" resource-id="app:id/tv_rank" bounds="[13,795][94,827]" />
+          <node text="" resource-id="app:id/iv_avatar" bounds="[94,774][167,847]" />
+          <node text="ID:60006" resource-id="app:id/tv_user_code" bounds="[194,795][325,827]" />
+          <node text="距前一名3" resource-id="app:id/tv_value" bounds="[528,795][685,827]" />
+        </hierarchy>"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = Path(temp_dir) / "voice_hall.sqlite3"
+            records: list[dict[str, object]] = []
+            with (
+                patch.object(self.scanner, "_open_contribution_panel"),
+                patch.object(
+                    self.scanner,
+                    "_capture_ocr",
+                    return_value=(None, [ocr("房间贡献榜", (330, 55, 150, 35))]),
+                ),
+                patch.object(self.scanner, "_dump_ui_hierarchy", return_value=hierarchy),
+                patch.object(self.scanner, "_record_user") as record_user,
+                patch.object(self.scanner, "_scroll_contribution", return_value=None),
+                patch.object(self.scanner, "_log"),
+            ):
+                self.assertTrue(
+                    self.scanner._scan_contribution(
+                        context=SimpleNamespace(),
+                        room_id="120323",
+                        room_name="测试厅",
+                        output_path=database_path,
+                        records=records,
+                        processed_users=set(),
+                        delay=0.1,
+                        max_pages=10,
+                        max_users=4,
+                        include_top3=False,
+                        unknown_gender_as_male=False,
+                    )
+                )
+
+            self.assertEqual(
+                [call.kwargs["rank"] for call in record_user.call_args_list],
+                [4],
+            )
+            saved = VoiceHallDatabase(database_path).load_contributions()
+            self.assertEqual([row["user_id"] for row in saved], ["40004", "50005", "60006"])
+            self.assertEqual(
+                [row["estimated_contribution_value"] for row in saved],
+                [9, 4, 1],
+            )
+            mystery = next(row for row in saved if row["user_id"] == "50005")
+            self.assertIsNone(mystery["username"])
+            self.assertIsNone(mystery["gender"])
 
     def test_profile_id_comes_from_copy_control_not_ocr(self) -> None:
         hierarchy = """<?xml version='1.0' encoding='UTF-8'?>
@@ -1329,6 +1397,40 @@ class HallListRecognitionTest(unittest.TestCase):
             self.assertEqual(len(thresholds), 301)
             self.assertEqual(len(charm_thresholds), 301)
 
+    def test_leaderboard_update_preserves_existing_profile_details(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = VoiceHallDatabase(Path(temp_dir) / "voice_hall.sqlite3")
+            detailed = {
+                "room_id": "64900",
+                "room_name": "测试厅",
+                "rank": 2,
+                "user_id": "23437464",
+                "username": "完整用户",
+                "gender": "男",
+                "wealth_level": 77,
+                "scanned_at": "2026-09-14T12:30:00+08:00",
+            }
+            database.upsert_contribution(detailed)
+
+            database.upsert_leaderboard_contribution(
+                {
+                    "room_id": "64900",
+                    "room_name": "测试厅",
+                    "rank": 4,
+                    "contribution_gap": 120,
+                    "estimated_contribution_value": 345,
+                    "user_id": "23437464",
+                    "scanned_at": "2026-09-14T12:35:00+08:00",
+                }
+            )
+
+            row = database.load_contributions()[0]
+            self.assertEqual(row["rank"], 4)
+            self.assertEqual(row["estimated_contribution_value"], 345)
+            self.assertEqual(row["username"], "完整用户")
+            self.assertEqual(row["gender"], "男")
+            self.assertEqual(row["wealth_level"], 77)
+
     def test_sqlite_starts_empty_and_does_not_import_legacy_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             directory = Path(temp_dir)
@@ -1358,6 +1460,54 @@ class HallListRecognitionTest(unittest.TestCase):
             self.assertEqual(len(charm_thresholds), 301)
             self.assertNotIn("wealth_min_contribution", contribution_columns)
 
+    def test_database_purge_keeps_exactly_the_latest_seven_days(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = VoiceHallDatabase(Path(temp_dir) / "voice_hall.sqlite3")
+            database.initialize()
+            for scan_date, user_id in (
+                ("2026-09-18", "expired"),
+                ("2026-09-19", "boundary"),
+                ("2026-09-25", "today"),
+            ):
+                database.upsert_contribution(
+                    {
+                        "room_id": "100",
+                        "user_id": user_id,
+                        "scanned_at": f"{scan_date}T12:00:00+08:00",
+                    }
+                )
+                database.upsert_level_sample(
+                    {
+                        "room_id": "100",
+                        "user_id": user_id,
+                        "missing_fields": ["wealth_level"],
+                        "screenshot": f"{user_id}.png",
+                        "scanned_at": f"{scan_date}T12:00:00+08:00",
+                    }
+                )
+
+            purged = database.purge_old_data(date(2026, 9, 25))
+
+            self.assertEqual(purged, {"contributions": 1, "level_samples": 1})
+            self.assertEqual(
+                [
+                    row["user_id"]
+                    for row in database.fetch_all(
+                        "SELECT user_id FROM contributions ORDER BY scan_date"
+                    )
+                ],
+                ["boundary", "today"],
+            )
+            self.assertEqual(
+                [
+                    row["user_id"]
+                    for row in database.fetch_all(
+                        "SELECT user_id FROM level_samples ORDER BY scan_date"
+                    )
+                ],
+                ["boundary", "today"],
+            )
+
     def test_contribution_scroll_starts_above_bottom_overlay(self) -> None:
         controller = FakeController()
         self.scanner.controller = controller
@@ -1380,57 +1530,18 @@ class HallListRecognitionTest(unittest.TestCase):
         self.assertIs(result, next_page)
         self.assertEqual(controller.swipes, [(650, 1040, 650, 650, 700)])
 
-    def test_prescan_reset_returns_to_room_and_reopens_contribution(self) -> None:
+    def test_contribution_scan_reads_page_once_without_resetting_panel(self) -> None:
+        context = SimpleNamespace()
         controller = FakeController()
         self.scanner.controller = controller
-        context = SimpleNamespace()
-        room_items = [
-            ocr("公告", (48, 141, 55, 25)),
-            ocr("聊聊天", (33, 1201, 79, 33)),
-        ]
-        contribution_items = [ocr("房间贡献榜", (330, 55, 150, 35))]
-
         with (
-            patch.object(
-                self.scanner,
-                "_capture_ocr",
-                side_effect=[
-                    (None, room_items),
-                    (None, contribution_items),
-                ],
-            ),
-            patch.object(self.scanner, "_open_contribution_panel") as reopen,
-            patch.object(self.scanner, "_sleep"),
-            patch.object(self.scanner, "_log"),
-        ):
-            reset = self.scanner._reset_contribution_panel_after_prescan(
-                context,
-                room_id="51795",
-                delay=0.1,
-            )
-
-        self.assertTrue(reset)
-        self.assertEqual(controller.clicks, [("key", 4)])
-        reopen.assert_called_once_with(context, 0.1)
-
-    def test_contribution_scan_does_not_prescan_or_reset_panel(self) -> None:
-        context = SimpleNamespace()
-        with (
-            patch.object(self.scanner, "_open_contribution_panel"),
+            patch.object(self.scanner, "_open_contribution_panel") as open_panel,
             patch.object(
                 self.scanner,
                 "_capture_ocr",
                 return_value=(None, [ocr("房间贡献榜", (330, 55, 150, 35))]),
-            ),
-            patch.object(self.scanner, "_dump_ui_hierarchy", return_value=""),
-            patch.object(
-                self.scanner,
-                "_collect_contribution_rank_data",
-            ) as prescan,
-            patch.object(
-                self.scanner,
-                "_reset_contribution_panel_after_prescan",
-            ) as prescan_reset,
+            ) as capture,
+            patch.object(self.scanner, "_dump_ui_hierarchy", return_value="") as dump,
             patch.object(self.scanner, "_log"),
         ):
             scanned = self.scanner._scan_contribution(
@@ -1448,8 +1559,10 @@ class HallListRecognitionTest(unittest.TestCase):
             )
 
         self.assertTrue(scanned)
-        prescan.assert_not_called()
-        prescan_reset.assert_not_called()
+        open_panel.assert_called_once_with(context, 0.1)
+        capture.assert_called_once_with(context)
+        dump.assert_called_once_with()
+        self.assertEqual(controller.clicks, [])
 
     def test_record_user_does_not_treat_leaderboard_as_profile(self) -> None:
         controller = FakeController()
@@ -1890,7 +2003,7 @@ class HallListRecognitionTest(unittest.TestCase):
         )
         log.assert_any_call("排名 14 为神秘人，资料页不可访问，跳过")
 
-    def test_contribution_scan_stops_at_configured_rank_limit(self) -> None:
+    def test_contribution_scan_limits_profiles_but_continues_rank_collection(self) -> None:
         controller = FakeController()
         self.scanner.controller = controller
         hierarchy = """<?xml version='1.0'?>
@@ -1954,7 +2067,7 @@ class HallListRecognitionTest(unittest.TestCase):
             record_user.call_args_list[-1].kwargs["click_point"],
             (LEADERBOARD_USER_CODE_X, 610),
         )
-        scroll.assert_not_called()
+        scroll.assert_called_once()
 
     def test_missing_rank_limit_uses_safe_default_of_100(self) -> None:
         context = SimpleNamespace(
@@ -2204,7 +2317,7 @@ class HallListRecognitionTest(unittest.TestCase):
         self.assertEqual(startup["exec"], "python")
         self.assertEqual(
             startup["args"],
-            ["-u", "agent/contribution_viewer.py", "--serve"],
+            ["-u", "agent/contribution_viewer.py", "--serve", "--clear-logs"],
         )
         self.assertEqual(startup["cwd"], ".")
         self.assertNotIn("--owner-pid", startup["args"])

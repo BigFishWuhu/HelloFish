@@ -1,6 +1,7 @@
 import json
 import sqlite3
 from contextlib import closing
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -25,6 +26,9 @@ CONTRIBUTION_COLUMNS = (
     "level_sample_path",
     "scanned_at",
 )
+
+DATA_RETENTION_DAYS = 7
+CHINA_TZ = timezone(timedelta(hours=8))
 
 
 class VoiceHallDatabase:
@@ -144,6 +148,33 @@ class VoiceHallDatabase:
                 enumerate(CHARM_LEVEL_MIN_VALUES),
             )
 
+    def purge_old_data(self, today: date | None = None) -> dict[str, int]:
+        """Delete records older than the latest seven China calendar days."""
+        self.initialize()
+        current_day = today or datetime.now(CHINA_TZ).date()
+        cutoff = (current_day - timedelta(days=DATA_RETENTION_DAYS - 1)).isoformat()
+        with closing(self._connect()) as connection, connection:
+            contribution_count = connection.execute(
+                "SELECT COUNT(*) FROM contributions WHERE scan_date < ?",
+                (cutoff,),
+            ).fetchone()[0]
+            sample_count = connection.execute(
+                "SELECT COUNT(*) FROM level_samples WHERE scan_date < ?",
+                (cutoff,),
+            ).fetchone()[0]
+            connection.execute(
+                "DELETE FROM contributions WHERE scan_date < ?",
+                (cutoff,),
+            )
+            connection.execute(
+                "DELETE FROM level_samples WHERE scan_date < ?",
+                (cutoff,),
+            )
+        return {
+            "contributions": int(contribution_count),
+            "level_samples": int(sample_count),
+        }
+
     @staticmethod
     def _scan_date(record: dict[str, Any]) -> str:
         value = str(record.get("scanned_at", ""))[:10]
@@ -193,6 +224,64 @@ class VoiceHallDatabase:
         self.initialize()
         with closing(self._connect()) as connection, connection:
             return self._upsert_contribution(connection, record)
+
+    @staticmethod
+    def _upsert_leaderboard_contribution(
+        connection: sqlite3.Connection,
+        record: dict[str, Any],
+    ) -> bool:
+        """Store rank estimates without erasing profile fields already captured today."""
+        scan_date = VoiceHallDatabase._scan_date(record)
+        key = (str(record.get("room_id", "")), str(record.get("user_id", "")), scan_date)
+        existed = connection.execute(
+            """
+            SELECT 1 FROM contributions
+            WHERE room_id = ? AND user_id = ? AND scan_date = ?
+            """,
+            key,
+        ).fetchone() is not None
+        connection.execute(
+            """
+            INSERT INTO contributions (
+                room_id, room_name, rank, contribution_gap,
+                estimated_contribution_value, user_id, scanned_at, scan_date
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(room_id, user_id, scan_date) DO UPDATE SET
+                room_name = excluded.room_name,
+                rank = excluded.rank,
+                contribution_gap = excluded.contribution_gap,
+                estimated_contribution_value = excluded.estimated_contribution_value,
+                scanned_at = excluded.scanned_at
+            """,
+            (
+                str(record.get("room_id", "")),
+                record.get("room_name"),
+                record.get("rank"),
+                record.get("contribution_gap"),
+                record.get("estimated_contribution_value"),
+                str(record.get("user_id", "")),
+                str(record.get("scanned_at", "")),
+                scan_date,
+            ),
+        )
+        return existed
+
+    def upsert_leaderboard_contribution(self, record: dict[str, Any]) -> bool:
+        return bool(self.upsert_leaderboard_contributions([record]))
+
+    def upsert_leaderboard_contributions(
+        self,
+        records: Iterable[dict[str, Any]],
+    ) -> int:
+        pending = list(records)
+        if not pending:
+            return 0
+        self.initialize()
+        with closing(self._connect()) as connection, connection:
+            return sum(
+                self._upsert_leaderboard_contribution(connection, record)
+                for record in pending
+            )
 
     def load_contributions(self) -> list[dict[str, Any]]:
         self.initialize()

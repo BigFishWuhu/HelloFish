@@ -1003,6 +1003,11 @@ class ContributionScanner(CustomAction):
 
         database = VoiceHallDatabase(output_path)
         database.initialize()
+        purged = database.purge_old_data()
+        self._log(
+            "已清理 7 天前数据："
+            f"贡献记录 {purged['contributions']} 条，等级样本 {purged['level_samples']} 条"
+        )
         records = database.load_contributions()
         processed_users = {
             (str(item.get("room_id")), str(item.get("user_id"))) for item in records
@@ -1262,6 +1267,31 @@ class ContributionScanner(CustomAction):
 
         seen_ranks: set[int] = set()
         page_fingerprints: set[tuple[int, ...]] = set()
+        hall_rank_data: dict[int, dict[str, Any]] = {}
+        detail_limit_logged = False
+
+        def should_scan_details(rank: int) -> bool:
+            nonlocal detail_limit_logged
+            if not max_users or rank <= max_users:
+                return True
+            if not detail_limit_logged:
+                self._log(
+                    f"厅 {room_id} 已达到前 {max_users} 名的资料扫描上限，"
+                    "继续读取其余榜单的 ID 和贡献值"
+                )
+                detail_limit_logged = True
+            return False
+
+        def finish_hall() -> bool:
+            self._finalize_contribution_rank_data(
+                room_id=room_id,
+                room_name=room_name,
+                output_path=output_path,
+                records=records,
+                processed_users=processed_users,
+                rank_data=hall_rank_data,
+            )
+            return True
 
         for page_index in range(max_pages):
             self._check_stopping(context)
@@ -1270,7 +1300,7 @@ class ContributionScanner(CustomAction):
             hierarchy = self._dump_ui_hierarchy()
             hierarchy_top3, hierarchy_rows = _find_contribution_targets(hierarchy)
             rank_rows = hierarchy_rows or self._find_rank_rows(items)
-            rank_data = _find_contribution_row_data(hierarchy)
+            page_rank_data = _find_contribution_row_data(hierarchy)
             if not (
                 self._is_contribution_panel(items)
                 or _is_contribution_hierarchy(hierarchy)
@@ -1278,6 +1308,11 @@ class ContributionScanner(CustomAction):
                 self._log(f"厅 {room_id} 未打开贡献榜，跳过")
                 self._save_contribution_open_failure(image, hierarchy, room_id)
                 return False
+            for rank, data in page_rank_data.items():
+                target = hall_rank_data.setdefault(rank, {})
+                for key, value in data.items():
+                    if value is not None or key not in target:
+                        target[key] = value
             if not hierarchy_top3 and not hierarchy_rows:
                 self._log(
                     f"厅 {room_id} 第 {page_index + 1} 页结构读取失败，使用 OCR 兜底"
@@ -1287,9 +1322,8 @@ class ContributionScanner(CustomAction):
                 top3_targets = hierarchy_top3 or list(TOP3_TARGETS)
                 for rank, point in top3_targets:
                     self._check_stopping(context)
-                    if max_users and rank > max_users:
-                        self._log(f"厅 {room_id} 已达到贡献榜前 {max_users} 名的扫描上限")
-                        return True
+                    if not should_scan_details(rank):
+                        continue
                     self._log(f"厅 {room_id} 正在读取排名 {rank} 的用户")
                     self._record_user(
                         context=context,
@@ -1303,13 +1337,10 @@ class ContributionScanner(CustomAction):
                         delay=delay,
                         unknown_gender_as_male=unknown_gender_as_male,
                         record_genders=record_genders,
-                        contribution_gap=rank_data.get(rank, {}).get("contribution_gap"),
-                        leaderboard_user_id=rank_data.get(rank, {}).get("user_id"),
+                        contribution_gap=hall_rank_data.get(rank, {}).get("contribution_gap"),
+                        leaderboard_user_id=hall_rank_data.get(rank, {}).get("user_id"),
                         from_leaderboard=True,
                     )
-                    if max_users and rank >= max_users:
-                        self._log(f"厅 {room_id} 已完成贡献榜前 {max_users} 名的扫描")
-                        return True
 
             unopenable_ranks = _find_unopenable_contribution_ranks(hierarchy)
             unopenable_ranks.update(
@@ -1318,7 +1349,7 @@ class ContributionScanner(CustomAction):
             fingerprint = tuple(rank for rank, _ in rank_rows)
             if not fingerprint or fingerprint in page_fingerprints:
                 self._log(f"厅 {room_id} 贡献榜已到底")
-                return True
+                return finish_hall()
             page_fingerprints.add(fingerprint)
 
             for rank, row_y in rank_rows:
@@ -1326,14 +1357,10 @@ class ContributionScanner(CustomAction):
                 if rank in seen_ranks:
                     continue
                 seen_ranks.add(rank)
-                if max_users and rank > max_users:
-                    self._log(f"厅 {room_id} 已达到贡献榜前 {max_users} 名的扫描上限")
-                    return True
+                if not should_scan_details(rank):
+                    continue
                 if rank in unopenable_ranks:
                     self._log(f"排名 {rank} 为神秘人，资料页不可访问，跳过")
-                    if max_users and rank >= max_users:
-                        self._log(f"厅 {room_id} 已完成贡献榜前 {max_users} 名的扫描")
-                        return True
                     continue
                 self._log(f"厅 {room_id} 正在读取排名 {rank} 的用户")
                 self._record_user(
@@ -1348,13 +1375,10 @@ class ContributionScanner(CustomAction):
                     delay=delay,
                     unknown_gender_as_male=unknown_gender_as_male,
                     record_genders=record_genders,
-                    contribution_gap=rank_data.get(rank, {}).get("contribution_gap"),
-                    leaderboard_user_id=rank_data.get(rank, {}).get("user_id"),
+                    contribution_gap=hall_rank_data.get(rank, {}).get("contribution_gap"),
+                    leaderboard_user_id=hall_rank_data.get(rank, {}).get("user_id"),
                     from_leaderboard=True,
                 )
-                if max_users and rank >= max_users:
-                    self._log(f"厅 {room_id} 已完成贡献榜前 {max_users} 名的扫描")
-                    return True
 
             next_items = self._scroll_contribution(
                 context,
@@ -1363,88 +1387,116 @@ class ContributionScanner(CustomAction):
             )
             if next_items is None:
                 self._log(f"厅 {room_id} 贡献榜已到底或滑动未生效")
-                return True
-        return True
+                return finish_hall()
+        return finish_hall()
 
-    def _collect_contribution_rank_data(
+    def _finalize_contribution_rank_data(
         self,
-        context: Context,
         room_id: str,
-        delay: float,
-        max_pages: int,
-        max_users: int,
-    ) -> tuple[dict[int, dict[str, Any]], bool]:
-        collected: dict[int, dict[str, Any]] = {}
-        page_fingerprints: set[tuple[int, ...]] = set()
-        moved_from_top = False
-        for page_index in range(max_pages):
-            self._check_stopping(context)
-            self._log(f"厅 {room_id} 正在预扫描榜单第 {page_index + 1} 页")
-            _, items = self._capture_ocr(context)
-            hierarchy = self._dump_ui_hierarchy()
-            if not (
-                self._is_contribution_panel(items)
-                or _is_contribution_hierarchy(hierarchy)
-            ):
-                break
+        room_name: str,
+        output_path: Path,
+        records: list[dict[str, Any]],
+        processed_users: set[tuple[str, str]],
+        rank_data: dict[int, dict[str, Any]],
+    ) -> None:
+        if not rank_data:
+            self._log(f"厅 {room_id} 未读取到可估算的榜单数据")
+            return
 
-            page_data = _find_contribution_row_data(hierarchy)
-            for rank, data in page_data.items():
-                if max_users and rank > max_users:
-                    continue
-                target = collected.setdefault(rank, {})
-                for key, value in data.items():
-                    if value is not None or key not in target:
-                        target[key] = value
+        _estimate_contribution_values(rank_data)
+        scanned_at = self._now()
+        scan_date = scanned_at[:10]
+        database = VoiceHallDatabase(output_path)
+        leaderboard_records: list[dict[str, Any]] = []
 
-            _, hierarchy_rows = _find_contribution_targets(hierarchy)
-            rank_rows = hierarchy_rows or self._find_rank_rows(items)
-            fingerprint = tuple(rank for rank, _ in rank_rows)
-            if not fingerprint or fingerprint in page_fingerprints:
-                break
-            page_fingerprints.add(fingerprint)
-            if max_users and max(fingerprint) >= max_users:
-                break
-            next_items = self._scroll_contribution(
-                context,
-                before_ranks=fingerprint,
-                delay=delay,
-            )
-            if next_items is None:
-                break
-            moved_from_top = True
-        return collected, moved_from_top
+        for rank in sorted(rank_data):
+            data = rank_data[rank]
+            user_id = str(data.get("user_id") or "").strip()
+            if not user_id:
+                user_id = next(
+                    (
+                        str(record.get("user_id") or "").strip()
+                        for record in reversed(records)
+                        if str(record.get("room_id")) == room_id
+                        and record.get("rank") == rank
+                        and str(record.get("scanned_at") or "")[:10] == scan_date
+                        and str(record.get("user_id") or "").strip()
+                    ),
+                    "",
+                )
+            if not user_id:
+                continue
 
-    def _reset_contribution_panel_after_prescan(
-        self,
-        context: Context,
-        room_id: str,
-        delay: float,
-    ) -> bool:
-        self._log(f"厅 {room_id} 预扫描完成，返回厅内并重新打开贡献榜")
-        self.controller.post_click_key(4).wait()
-        self._sleep(context, max(delay, 0.7))
+            record = {
+                "room_id": room_id,
+                "room_name": room_name,
+                "rank": rank,
+                "contribution_gap": data.get("contribution_gap"),
+                "estimated_contribution_value": data.get(
+                    "estimated_contribution_value"
+                ),
+                "user_id": user_id,
+                "scanned_at": scanned_at,
+                "leaderboard_only": True,
+            }
+            processed_users.add((room_id, user_id))
+            self._merge_daily_leaderboard_record(records, record)
+            leaderboard_records.append(record)
 
-        for attempt in range(3):
-            self._check_stopping(context)
-            _, items = self._capture_ocr(context)
-            if self._is_room_page(items):
-                break
-            if self._is_contribution_panel(items) and attempt < 2:
-                self.controller.post_click_key(4).wait()
-            self._sleep(context, max(delay, 0.7))
-        else:
-            self._log(f"厅 {room_id} 预扫描后未能返回厅内")
-            return False
+        database.upsert_leaderboard_contributions(leaderboard_records)
 
-        self._open_contribution_panel(context, delay)
-        _, items = self._capture_ocr(context)
-        if self._is_contribution_panel(items):
-            return True
-        if _is_contribution_hierarchy(self._dump_ui_hierarchy()):
-            return True
-        self._log(f"厅 {room_id} 预扫描后重新打开贡献榜失败")
-        return False
+        if self.cloud_sync is not None and leaderboard_records:
+            try:
+                upload_many = getattr(self.cloud_sync, "upload_many", None)
+                if callable(upload_many):
+                    for start in range(0, len(leaderboard_records), 500):
+                        upload_many(leaderboard_records[start : start + 500])
+                else:
+                    for record in leaderboard_records:
+                        self.cloud_sync.upload(record)
+                self._log(
+                    f"云端上传榜单估算成功：厅={room_id} "
+                    f"用户数={len(leaderboard_records)}"
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._log(
+                    f"云端上传榜单估算失败，已保留本地记录：厅={room_id}，{exc}"
+                )
+
+        self._log(
+            f"厅 {room_id} 贡献值估算完成：读取排名={len(rank_data)}，"
+            f"保存用户={len(leaderboard_records)}"
+        )
+
+    @staticmethod
+    def _merge_daily_leaderboard_record(
+        records: list[dict[str, Any]],
+        leaderboard_record: dict[str, Any],
+    ) -> None:
+        scan_date = str(leaderboard_record.get("scanned_at") or "")[:10]
+        existing = next(
+            (
+                record
+                for record in records
+                if str(record.get("room_id"))
+                == str(leaderboard_record.get("room_id"))
+                and str(record.get("user_id"))
+                == str(leaderboard_record.get("user_id"))
+                and str(record.get("scanned_at") or "")[:10] == scan_date
+            ),
+            None,
+        )
+        if existing is None:
+            records.append(dict(leaderboard_record))
+            return
+        for field in (
+            "room_name",
+            "rank",
+            "contribution_gap",
+            "estimated_contribution_value",
+            "scanned_at",
+        ):
+            existing[field] = leaderboard_record.get(field)
 
     def _scroll_contribution(
         self,
