@@ -40,9 +40,10 @@ EXPORT_COLUMNS = {
     "room_name": "厅名称 / ID",
     "rank": "厅内排名",
     "contribution_gap": "距前一名",
-    "estimated_contribution_value": "推测贡献值下限",
-    "estimated_contribution_total": "合计推测贡献值下限",
+    "estimated_contribution_value": "单厅榜单贡献值推测下限",
+    "estimated_contribution_total": "推测日榜贡献值下限",
     "username": "用户名 / ID",
+    "user_tag": "用户标识",
     "gender": "性别",
     "ip": "IP 属地",
     "close_friend_count": "挚友数量",
@@ -60,6 +61,7 @@ DEFAULT_EXPORT_COLUMNS = (
     "estimated_contribution_value",
     "estimated_contribution_total",
     "username",
+    "user_tag",
     "gender",
     "ip",
     "close_friend_count",
@@ -74,10 +76,11 @@ SUMMARY_COLUMNS = {
     "gender": "性别",
     "ip": "IP 属地",
     "close_friend_count": "挚友",
-    "estimated_contribution_total": "合计推测金额下限",
+    "estimated_contribution_total": "推测日榜金额下限",
     "wealth_level": "财富等级",
     "charm_level": "魅力等级",
     "account_assessment": "账号判断",
+    "user_tag": "用户标识",
 }
 DEFAULT_SUMMARY_COLUMN_ORDER = tuple(SUMMARY_COLUMNS)
 
@@ -451,6 +454,8 @@ def query_records(
     database_path: Path,
     settings_path: Path,
     record_query: RecordQuery,
+    *,
+    today: date | None = None,
 ) -> dict[str, Any]:
     where_sql, parameters, order_by = _build_record_filter(settings_path, record_query)
 
@@ -477,7 +482,9 @@ def query_records(
             parameters,
         ).fetchall()
 
-    grouped_records = _filter_grouped_records(_group_records(rows), record_query)
+    grouped_records = _filter_grouped_records(
+        _group_records(rows, today=today), record_query
+    )
     total = len(grouped_records)
     offset = (record_query.page - 1) * record_query.page_size
     records = grouped_records[offset : offset + record_query.page_size]
@@ -503,8 +510,11 @@ def _record_dict(row: sqlite3.Row) -> dict[str, Any]:
     return record
 
 
-def _group_records(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
+def _group_records(
+    rows: list[sqlite3.Row], *, today: date | None = None
+) -> list[dict[str, Any]]:
     """Merge matching contribution rows by user while retaining every appearance."""
+    today_text = (today or _china_today()).isoformat()
     groups: dict[str, dict[str, Any]] = {}
     for index, row in enumerate(rows):
         detail = _record_dict(row)
@@ -537,6 +547,38 @@ def _group_records(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
             if estimated_values
             else None
         )
+        today_appearances = [
+            item for item in appearances if item.get("scan_date") == today_text
+        ]
+        today_estimated_values = [
+            item.get("estimated_contribution_value")
+            for item in today_appearances
+            if item.get("estimated_contribution_value") is not None
+        ]
+        today_total = (
+            sum(int(value) for value in today_estimated_values)
+            if today_estimated_values
+            else None
+        )
+        threshold_records = [
+            item
+            for item in today_appearances
+            if item.get("wealth_min_contribution") is not None
+        ]
+        if not threshold_records:
+            threshold_records = [
+                item
+                for item in appearances
+                if item.get("wealth_min_contribution") is not None
+            ]
+        today_wealth_threshold = (
+            max(threshold_records, key=lambda item: str(item.get("scanned_at") or ""))[
+                "wealth_min_contribution"
+            ]
+            if threshold_records
+            else None
+        )
+        group["user_tag"] = _new_player_tag(today_total, today_wealth_threshold)
     return list(groups.values())
 
 
@@ -604,6 +646,14 @@ def _account_assessment(wealth_value: Any, charm_value: Any) -> str | None:
     if wealth * 2 >= charm * 3:
         return "高概率真实玩家"
     return "疑似排挡账号"
+
+
+def _new_player_tag(today_contribution: Any, wealth_min_contribution: Any) -> str | None:
+    if today_contribution is None or wealth_min_contribution is None:
+        return None
+    if int(today_contribution) * 10 > int(wealth_min_contribution) * 9:
+        return "新玩家可能性高"
+    return None
 
 
 def _export_value(record: sqlite3.Row, column: str) -> Any:
@@ -695,10 +745,13 @@ def export_records_csv(
     settings_path: Path,
     record_query: RecordQuery,
     columns: list[str],
+    *,
+    today: date | None = None,
 ) -> bytes:
     records = _filter_grouped_records(
         _group_records(
-            _query_export_records(database_path, settings_path, record_query)
+            _query_export_records(database_path, settings_path, record_query),
+            today=today,
         ),
         record_query,
     )
@@ -744,20 +797,20 @@ main { position: relative; z-index: 1; padding: 26px clamp(14px, 4vw, 56px) 48px
 .summary span { color: #71888c; font-size: 11px; font-weight: 700; text-transform: uppercase; }
 .summary time { margin-left: auto; color: #71888c; font-size: 12px; }
 .panel { overflow: hidden; border: 1px solid #dce8e5; border-radius: 8px; background: white; box-shadow: 0 12px 38px rgba(17, 72, 76, .08); }
-.filters { display: flex; flex-wrap: wrap; align-items: end; gap: 14px; padding: 18px; margin-bottom: 18px; }
-.field { display: grid; gap: 7px; min-width: 130px; }
+.filters { display: flex; flex-wrap: wrap; align-items: end; gap: 8px 10px; padding: 11px 14px; margin-bottom: 14px; }
+.field { display: grid; gap: 3px; min-width: 130px; }
 .field.wide { flex: 1 1 180px; }
-.field label, .check-field { color: #536d72; font-size: 12px; font-weight: 700; }
-input, select { width: 100%; border: 1px solid #cddedb; border-radius: 8px; padding: 9px 10px; color: #17343b; background: #fbfdfd; font: inherit; }
-.check-field { display: flex; align-items: center; gap: 7px; padding-bottom: 8px; }
+.field label, .check-field { color: #536d72; font-size: 11px; font-weight: 700; }
+input, select { width: 100%; border: 1px solid #cddedb; border-radius: 8px; padding: 7px 9px; color: #17343b; background: #fbfdfd; font: inherit; }
+.check-field { display: flex; align-items: center; gap: 7px; padding-bottom: 6px; }
 .check-field input { width: 16px; height: 16px; accent-color: #16877f; }
 .filter-actions { display: flex; gap: 8px; }
-.primary, .secondary { border: 0; border-radius: 8px; padding: 10px 15px; font-weight: 800; cursor: pointer; font: inherit; }
+.primary, .secondary { border: 0; border-radius: 8px; padding: 8px 13px; font-weight: 800; cursor: pointer; font: inherit; }
 .primary { color: white; background: #177f79; }
 .secondary { color: #175b5c; background: #e7f2ef; }
-.table-scroll { overflow-x: auto; }
+.table-scroll { overflow: auto; max-height: 68vh; }
 table { width: 100%; border-collapse: collapse; white-space: nowrap; }
-th { padding: 13px 14px; color: #60797d; background: #eef5f3; font-size: 11px; text-align: left; letter-spacing: .04em; }
+th { position: sticky; top: 0; z-index: 1; padding: 13px 14px; color: #60797d; background: #eef5f3; font-size: 11px; text-align: left; letter-spacing: .04em; }
 td { padding: 13px 14px; border-top: 1px solid #e7efed; font-size: 13px; }
 tbody tr:nth-child(even) { background: #fbfdfd; }
 .identity { display: grid; gap: 2px; font-weight: 700; }
@@ -775,6 +828,7 @@ tbody tr:nth-child(even) { background: #fbfdfd; }
 .assessment { display: inline-block; border-radius: 4px; padding: 4px 7px; font-size: 11px; font-weight: 800; }
 .assessment.suspected { color: #9b342e; background: #fff0ed; }
 .assessment.likely-real { color: #17634e; background: #e7f5ef; }
+.user-tag { color: #8a4b00; font-weight: 800; }
 .detail-toggle { border: 0; border-radius: 6px; padding: 5px 8px; color: #176c70; background: #e7f2ef; font: inherit; font-size: 11px; font-weight: 800; cursor: pointer; }
 .user-detail-row td { padding: 0; background: #f6faf9; }
 .appearance-details { padding: 10px 22px 18px 42px; }
@@ -1039,10 +1093,13 @@ def export_records_html(
     record_query: RecordQuery,
     columns: list[str] | None = None,
     column_order: list[str] | None = None,
+    *,
+    today: date | None = None,
 ) -> bytes:
     rows = _filter_grouped_records(
         _group_records(
-            _query_export_records(database_path, settings_path, record_query)
+            _query_export_records(database_path, settings_path, record_query),
+            today=today,
         ),
         record_query,
     )
@@ -1131,6 +1188,10 @@ def export_records_html(
                 _format_html_estimated_yuan(record["estimated_contribution_total"]),
                 "estimated-total",
             ),
+            "user_tag": (
+                _html_text(record["user_tag"]),
+                "user-tag" if record["user_tag"] else "",
+            ),
             "wealth_level": ((
                 f'{_html_text(record["wealth_level"], "???")}'
                 f'<small>（{_format_html_yuan(record["wealth_min_contribution"])}）</small>'
@@ -1165,7 +1226,7 @@ def export_records_html(
             '<tr class="user-detail-row hidden"><td colspan="'
             f'{len(cells)}"><div class="appearance-details"><table class="appearance-table">'
             '<thead><tr><th>明细时间</th><th>所在厅 / ID</th><th>厅内排名</th>'
-            '<th>距前一名金额</th><th>推测金额下限</th><th>性别</th><th>IP 属地</th>'
+            '<th>距前一名金额</th><th>单厅榜单贡献金额推测下限</th><th>性别</th><th>IP 属地</th>'
             '<th>挚友</th><th>财富等级</th><th>魅力等级</th><th>账号判断</th></tr></thead>'
             f'<tbody>{detail_rows}</tbody></table></div></td></tr>'
         )
@@ -1215,7 +1276,7 @@ def export_records_html(
 <label class="check-field"><input name="include_unknown" type="checkbox" checked />显示财富等级为 ??? 的记录</label>
 <div class="field"><label for="filter-gender">性别</label><select id="filter-gender" name="gender"><option value="all">不限</option><option value="male">男</option><option value="female">女</option><option value="unknown">未知</option></select></div>
 <div class="field"><label for="filter-min-friends">挚友数量至少</label><input id="filter-min-friends" name="min_friends" type="number" min="0" placeholder="不限" /></div>
-<div class="field"><label for="filter-min-estimated">合计推测金额下限至少（元）</label><input id="filter-min-estimated" name="min_estimated_yuan" type="number" min="0" step="0.1" placeholder="不限" /></div>
+<div class="field"><label for="filter-min-estimated">推测日榜金额下限至少（元）</label><input id="filter-min-estimated" name="min_estimated_yuan" type="number" min="0" step="0.1" placeholder="不限" /></div>
 <div class="field"><label for="filter-room-id">厅 ID</label><input id="filter-room-id" name="room_id" type="search" placeholder="精确匹配" /></div>
 <div class="field"><label for="filter-user-id">用户 ID</label><input id="filter-user-id" name="user_id" type="search" placeholder="精确匹配" /></div>
 <div class="field wide"><label for="filter-username">用户名</label><input id="filter-username" name="username" type="search" placeholder="包含匹配" /></div>
@@ -1230,7 +1291,7 @@ def export_records_html(
 <div id="empty-state" class="empty{' hidden' if table_rows else ''}">当前条件下没有贡献记录</div>
 </div>
 </section>
-<p class="footnote">可在本地筛选导出文件中包含的记录；金额按 10 贡献值或魅力值 = 1 元换算。财富金额达到魅力金额的 1.5 倍时标记为高概率真实玩家，否则标记为疑似排挡账号。推测金额均为大于等于（≥）所示数值的下限，并非真实金额；推测以本次扫描最后一名为 1，缺失处按后续已知差值平均补算，第 1–3 名取相同值。</p>
+<p class="footnote">可在本地筛选导出文件中包含的记录；金额按 10 贡献值或魅力值 = 1 元换算。今日榜单贡献金额超过财富等级最低贡献金额 90% 时，用户标识为“新玩家可能性高”。财富金额达到魅力金额的 1.5 倍时标记为高概率真实玩家，否则标记为疑似排挡账号。榜单贡献推测金额均为大于等于（≥）所示数值的下限，并非真实金额；推测以本次扫描最后一名为 1，缺失处按后续已知差值平均补算，第 1–3 名取相同值。</p>
 </main>
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 <script>{STATIC_EXPORT_JS}</script>
@@ -1344,7 +1405,6 @@ class ContributionViewerHandler(BaseHTTPRequestHandler):
                     query,
                     columns,
                 )
-                filename = _wealth_password_filename("csv")
                 self._send_bytes(
                     HTTPStatus.OK,
                     payload,

@@ -5,8 +5,8 @@
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <meta name="color-scheme" content="light" />
         <title>HelloFish · 贡献记录</title>
-        <link rel="stylesheet" href="/styles.css?v=1.3.22" />
-        <script src="/app.js?v=1.3.22" defer></script>
+        <link rel="stylesheet" href="/styles.css?v=1.3.24" />
+        <script src="/app.js?v=1.3.24" defer></script>
     </head>
     <body>
         <header class="hero">
@@ -69,7 +69,7 @@
                     <input id="min-friends" type="number" min="0" placeholder="不限" />
                 </div>
                 <div class="field compact">
-                    <label id="min-estimated-label" for="min-estimated">合计推测金额下限至少（元）</label>
+                    <label id="min-estimated-label" for="min-estimated">推测日榜金额下限至少（元）</label>
                     <input id="min-estimated" type="number" min="0" step="0.1" placeholder="不限" />
                 </div>
                 <div class="field id-field">
@@ -127,7 +127,7 @@
                     <button id="next-page" class="secondary" type="button">下一页</button>
                 </footer>
             </section>
-            <p class="footnote">金额按 10 贡献值或魅力值 = 1 元换算。财富金额达到魅力金额的 1.5 倍时标记为高概率真实玩家，否则标记为疑似排挡账号。推测金额均为大于等于（≥）所示数值的下限，并非真实金额；推测以本次扫描最后一名为 1，缺失处按后续已知差值平均补算，第 1–3 名取相同值。</p>
+            <p class="footnote">金额按 10 贡献值或魅力值 = 1 元换算。今日榜单贡献金额超过财富等级最低贡献金额 90% 时，用户标识为“新玩家可能性高”。财富金额达到魅力金额的 1.5 倍时标记为高概率真实玩家，否则标记为疑似排挡账号。榜单贡献推测金额均为大于等于（≥）所示数值的下限，并非真实金额；推测以本次扫描最后一名为 1，缺失处按后续已知差值平均补算，第 1–3 名取相同值。</p>
         </main>
 
         <dialog id="column-order-dialog">
@@ -194,8 +194,8 @@
                     <label><input type="checkbox" data-export-column="room_name" checked />厅名称 / ID</label>
                     <label><input type="checkbox" data-export-column="rank" checked />厅内排名</label>
                     <label><input type="checkbox" data-export-column="contribution_gap" checked />距前一名</label>
-                    <label><input type="checkbox" data-export-column="estimated_contribution_value" checked />单厅推测贡献值下限</label>
-                    <label><input type="checkbox" data-export-column="estimated_contribution_total" checked />合计推测贡献值下限</label>
+                    <label><input type="checkbox" data-export-column="estimated_contribution_value" checked />单厅榜单贡献值推测下限</label>
+                    <label><input type="checkbox" data-export-column="estimated_contribution_total" checked />推测日榜贡献值下限</label>
                     <label><input type="checkbox" data-export-column="username" checked />用户名 / ID</label>
                     <label><input type="checkbox" data-export-column="gender" checked />性别</label>
                     <label><input type="checkbox" data-export-column="ip" checked />IP 属地</label>
@@ -209,6 +209,7 @@
                         <input type="checkbox" data-export-column="charm_min_value" />等级最低魅力值
                     </label>
                     <label><input type="checkbox" data-export-column="account_assessment" checked />账号判断</label>
+                    <label><input type="checkbox" data-export-column="user_tag" checked />用户标识</label>
                 </div>
                 <p id="export-status" class="dialog-status"></p>
                 <div class="dialog-actions">

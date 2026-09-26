@@ -20,7 +20,7 @@ const controls = {
 const defaultColumnOrder = [
     "username", "rooms", "scanned_at", "gender", "ip",
     "close_friend_count", "estimated_contribution_total",
-    "wealth_level", "charm_level", "account_assessment",
+    "wealth_level", "charm_level", "account_assessment", "user_tag",
 ];
 const columnLabels = {
     username: "用户名",
@@ -29,10 +29,11 @@ const columnLabels = {
     gender: "性别",
     ip: "IP 属地",
     close_friend_count: "挚友",
-    estimated_contribution_total: "合计推测金额下限",
+    estimated_contribution_total: "推测日榜金额下限",
     wealth_level: "财富等级",
     charm_level: "魅力等级",
     account_assessment: "账号判断",
+    user_tag: "用户标识",
 };
 const exportColumnsBySummaryColumn = {
     username: ["username"],
@@ -45,6 +46,7 @@ const exportColumnsBySummaryColumn = {
     wealth_level: ["wealth_level", "wealth_min_contribution"],
     charm_level: ["charm_level", "charm_min_value"],
     account_assessment: ["account_assessment"],
+    user_tag: ["user_tag"],
 };
 const state = {
     page: 1,
@@ -221,7 +223,7 @@ function renderColumnOrderEditor() {
         position.textContent = String(index + 1);
         const label = document.createElement("span");
         label.textContent = column === "estimated_contribution_total"
-            ? (controls.unit.value === "yuan" ? "合计推测金额下限" : "合计推测贡献值下限")
+            ? (controls.unit.value === "yuan" ? "推测日榜金额下限" : "推测日榜贡献值下限")
             : columnLabels[column];
         const up = document.createElement("button");
         up.type = "button";
@@ -371,13 +373,13 @@ function renderRecords() {
         const heading = document.createElement("th");
         heading.dataset.column = column;
         heading.textContent = column === "estimated_contribution_total"
-            ? (controls.unit.value === "yuan" ? "合计推测金额下限" : "合计推测贡献值下限")
+            ? (controls.unit.value === "yuan" ? "推测日榜金额下限" : "推测日榜贡献值下限")
             : columnLabels[column];
         header.append(heading);
     });
     $("#min-estimated-label").textContent = controls.unit.value === "yuan"
-        ? "合计推测金额下限至少（元）"
-        : "合计推测贡献值下限至少";
+        ? "推测日榜金额下限至少（元）"
+        : "推测日榜贡献值下限至少";
     for (const record of state.records) {
         const appearances = Array.isArray(record.appearances) && record.appearances.length
             ? record.appearances
@@ -414,6 +416,10 @@ function renderRecords() {
             assessment.classList.add("likely-real");
         }
 
+        const userTag = document.createElement("span");
+        userTag.className = record.user_tag ? "assessment new-player" : "";
+        userTag.textContent = record.user_tag ?? "—";
+
         const values = {
             username: user,
             rooms: roomSummary,
@@ -425,6 +431,7 @@ function renderRecords() {
             wealth_level: wealth,
             charm_level: charm,
             account_assessment: assessment,
+            user_tag: userTag,
         };
         state.columnOrder.forEach((column) => {
             const value = values[column];
@@ -453,7 +460,7 @@ function renderRecords() {
             "厅",
             "排名",
             controls.unit.value === "yuan" ? "距前一名金额" : "距前一名贡献值",
-            controls.unit.value === "yuan" ? "推测金额下限" : "推测贡献值下限",
+            controls.unit.value === "yuan" ? "单厅榜单贡献金额推测下限" : "单厅榜单贡献值推测下限",
             "性别",
             "IP 属地",
             "挚友",

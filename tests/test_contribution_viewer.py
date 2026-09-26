@@ -114,7 +114,12 @@ class ContributionViewerTest(unittest.TestCase):
 
     def test_today_is_the_default_date_filter(self) -> None:
         query = RecordQuery.from_query({}, today=date(2026, 9, 14))
-        result = query_records(self.database_path, self.settings_path, query)
+        result = query_records(
+            self.database_path,
+            self.settings_path,
+            query,
+            today=date(2026, 9, 14),
+        )
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["records"][0]["user_id"], "u1")
         self.assertEqual(result["records"][0]["contribution_gap"], 250)
@@ -122,6 +127,41 @@ class ContributionViewerTest(unittest.TestCase):
         self.assertIsNotNone(result["records"][0]["wealth_min_contribution"])
         self.assertIsNotNone(result["records"][0]["charm_min_value"])
         self.assertEqual(result["records"][0]["account_assessment"], "高概率真实玩家")
+        self.assertEqual(result["records"][0]["user_tag"], "新玩家可能性高")
+
+    def test_new_player_tag_requires_more_than_ninety_percent_of_wealth_threshold(self) -> None:
+        self.assertEqual(contribution_viewer._new_player_tag(1_081, 1_200), "新玩家可能性高")
+        self.assertIsNone(contribution_viewer._new_player_tag(1_080, 1_200))
+        self.assertIsNone(contribution_viewer._new_player_tag(None, 1_200))
+
+    def test_new_player_tag_uses_today_total_across_rooms(self) -> None:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            for room_id, estimate in (("400", 600), ("500", 500)):
+                VoiceHallDatabase._upsert_contribution(
+                    connection,
+                    {
+                        "room_id": room_id,
+                        "room_name": room_id,
+                        "rank": 1,
+                        "estimated_contribution_value": estimate,
+                        "user_id": "u4",
+                        "username": "丁",
+                        "wealth_level": 20,
+                        "charm_level": 1,
+                        "scanned_at": "2026-09-14T10:00:00+08:00",
+                    },
+                )
+
+        query = RecordQuery.from_query({"user_id": ["u4"]}, today=date(2026, 9, 14))
+        result = query_records(
+            self.database_path,
+            self.settings_path,
+            query,
+            today=date(2026, 9, 14),
+        )
+        record = result["records"][0]
+        self.assertEqual(record["estimated_contribution_total"], 1_100)
+        self.assertEqual(record["user_tag"], "新玩家可能性高")
 
     def test_account_assessment_uses_fifty_percent_wealth_boundary(self) -> None:
         self.assertEqual(_account_assessment(150, 100), "高概率真实玩家")
@@ -152,12 +192,16 @@ class ContributionViewerTest(unittest.TestCase):
         ):
             page = (web_root / "index.html").read_text(encoding="utf-8")
             script = (web_root / "app.js").read_text(encoding="utf-8")
+            styles = (web_root / "styles.css").read_text(encoding="utf-8")
             self.assertIn('id="min-estimated"', page)
             self.assertIn('id="column-order-dialog"', page)
             self.assertIn("min_estimated_contribution_total", script)
             self.assertIn("formatEstimatedValue", script)
             self.assertIn('params.set("column_order"', script)
             self.assertIn("reorderExportColumns", script)
+            self.assertIn("max-height: 68vh", styles)
+            self.assertIn("position: sticky", styles)
+            self.assertIn("padding: 11px 14px", styles)
 
     def test_default_today_uses_china_time_when_host_is_still_in_utc_yesterday(self) -> None:
         with patch.object(
@@ -269,6 +313,7 @@ class ContributionViewerTest(unittest.TestCase):
             self.settings_path,
             query,
             ["username", "room_name", "rank"],
+            today=date(2026, 9, 14),
         )
         rows = list(csv.reader(io.StringIO(payload.decode("utf-8-sig"))))
         self.assertEqual(len(rows), 2)
@@ -281,6 +326,7 @@ class ContributionViewerTest(unittest.TestCase):
             self.settings_path,
             query,
             ["username", "room_name"],
+            today=date(2026, 9, 14),
         ).decode("utf-8")
         self.assertIn('<strong id="record-total">1</strong>', document)
         self.assertIn("2 个厅 · 2 条记录", document)
@@ -414,6 +460,7 @@ class ContributionViewerTest(unittest.TestCase):
             self.settings_path,
             query,
             ["username", "wealth_level"],
+            today=date(2026, 9, 14),
         )
         rows = list(csv.reader(io.StringIO(payload.decode("utf-8-sig"))))
         self.assertEqual(rows[0], ["用户名 / ID", "财富等级"])
@@ -427,9 +474,10 @@ class ContributionViewerTest(unittest.TestCase):
             self.settings_path,
             query,
             ["contribution_gap", "estimated_contribution_value"],
+            today=date(2026, 9, 14),
         )
         rows = list(csv.reader(io.StringIO(payload.decode("utf-8-sig"))))
-        self.assertEqual(rows[0], ["距前一名", "推测贡献值下限"])
+        self.assertEqual(rows[0], ["距前一名", "单厅榜单贡献值推测下限"])
         self.assertEqual(rows[1], ["250", "≥1500"])
 
     def test_csv_export_includes_charm_amount_and_account_assessment(self) -> None:
@@ -439,6 +487,7 @@ class ContributionViewerTest(unittest.TestCase):
             self.settings_path,
             query,
             ["charm_level", "charm_min_value", "account_assessment"],
+            today=date(2026, 9, 14),
         )
         rows = list(csv.reader(io.StringIO(payload.decode("utf-8-sig"))))
         self.assertEqual(
@@ -446,6 +495,19 @@ class ContributionViewerTest(unittest.TestCase):
             ["魅力等级", "等级最低魅力值", "账号判断"],
         )
         self.assertEqual(rows[1], ["3（3元）", "30", "高概率真实玩家"])
+
+    def test_csv_export_includes_new_player_tag_and_daily_estimate_label(self) -> None:
+        query = RecordQuery.from_query({}, today=date(2026, 9, 14))
+        payload = export_records_csv(
+            self.database_path,
+            self.settings_path,
+            query,
+            ["estimated_contribution_total", "user_tag"],
+            today=date(2026, 9, 14),
+        )
+        rows = list(csv.reader(io.StringIO(payload.decode("utf-8-sig"))))
+        self.assertEqual(rows[0], ["推测日榜贡献值下限", "用户标识"])
+        self.assertEqual(rows[1], ["≥1500", "新玩家可能性高"])
 
     def test_csv_export_formats_yuan_amounts_by_wan(self) -> None:
         self.assertEqual(_format_yuan_amount(9999), "9999元")
@@ -497,7 +559,7 @@ class ContributionViewerTest(unittest.TestCase):
             {"column_order": ["estimated_contribution_total,username,bad,username"]}
         )
         self.assertEqual(order[:2], ["estimated_contribution_total", "username"])
-        self.assertEqual(len(order), 10)
+        self.assertEqual(len(order), 11)
 
         query = RecordQuery.from_query({}, today=date(2026, 9, 14))
         document = export_records_html(
@@ -505,9 +567,10 @@ class ContributionViewerTest(unittest.TestCase):
             self.settings_path,
             query,
             column_order=order,
+            today=date(2026, 9, 14),
         ).decode("utf-8")
         self.assertIn(
-            "<thead><tr><th>合计推测金额下限</th><th>用户名</th>",
+            "<thead><tr><th>推测日榜金额下限</th><th>用户名</th>",
             document,
         )
 
@@ -531,6 +594,7 @@ class ContributionViewerTest(unittest.TestCase):
             self.database_path,
             self.settings_path,
             query,
+            today=date(2026, 9, 14),
         ).decode("utf-8")
 
         self.assertIn('<strong id="record-total">2</strong>', document)
@@ -577,6 +641,7 @@ class ContributionViewerTest(unittest.TestCase):
             self.settings_path,
             query,
             ["username", "wealth_level"],
+            today=date(2026, 9, 14),
         ).decode("utf-8")
 
         self.assertIn(
@@ -585,7 +650,9 @@ class ContributionViewerTest(unittest.TestCase):
         )
         self.assertIn("请使用浏览器打开本文件，点击用户名即可复制用户 ID", document)
         self.assertIn("不推荐直接在微信中查看，微信内无法复制用户 ID", document)
-        self.assertIn("<th>合计推测金额下限</th>", document)
+        self.assertIn("<th>推测日榜金额下限</th>", document)
+        self.assertIn("<th>用户标识</th>", document)
+        self.assertIn("新玩家可能性高", document)
         self.assertIn('<td class="estimated-total">≥ 150 元</td>', document)
         self.assertNotIn("hellofish", document.lower())
         self.assertIn("<th>明细时间</th><th>所在厅 / ID</th>", document)
@@ -618,7 +685,10 @@ class ContributionViewerTest(unittest.TestCase):
             with urlopen(url, timeout=2) as response:  # noqa: S310
                 self.assertEqual(response.status, HTTPStatus.OK)
                 self.assertEqual(response.headers.get_content_type(), "text/html")
-                self.assertIn(".html", response.headers["Content-Disposition"])
+                self.assertRegex(
+                    response.headers["Content-Disposition"],
+                    r"filename\*=UTF-8''\d{4}-\d{2}-\d{2}-%E8%B4%A2%E5%AF%8C%E5%AF%86%E7%A0%81\.html",
+                )
                 self.assertIn(
                     "script-src 'unsafe-inline'",
                     response.headers["Content-Security-Policy"],

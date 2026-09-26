@@ -79,29 +79,29 @@ main {
     display: grid;
     grid-template-columns: repeat(12, minmax(0, 1fr));
     align-items: flex-end;
-    gap: 14px;
-    padding: 18px;
+    gap: 8px 10px;
+    padding: 11px 14px;
 }
-.filters > :nth-child(1) { grid-column: 1 / 3; }
-.filters > :nth-child(2),
-.filters > :nth-child(3) { grid-column: 3 / 7; }
-.filters > :nth-child(4) { grid-column: 7 / 9; }
-.filters > :nth-child(5) { grid-column: 9 / 12; }
-.filters > :nth-child(6) { grid-column: 12 / 13; }
-.filters > :nth-child(7) { grid-column: 1 / 3; }
-.filters > :nth-child(8) { grid-column: 3 / 5; }
-.filters > :nth-child(9) { grid-column: 5 / 7; }
-.filters > :nth-child(10) { grid-column: 7 / 9; }
-.filters > :nth-child(11) { grid-column: 9 / 12; min-width: 0; }
-.filters > :nth-child(12) { grid-column: 1 / 3; }
-.filters > :nth-child(13) { grid-column: 3 / 5; }
-.filters > :nth-child(14) { grid-column: 5 / 7; }
+.filters > :nth-child(1) { grid-column: span 2; }
+.filters > :nth-child(2) { grid-column: span 2; }
+.filters > :nth-child(3) { grid-column: span 4; }
+.filters > :nth-child(4) { grid-column: span 2; }
+.filters > :nth-child(5) { grid-column: span 3; }
+.filters > :nth-child(6) { grid-column: span 1; }
+.filters > :nth-child(7),
+.filters > :nth-child(8),
+.filters > :nth-child(9),
+.filters > :nth-child(10),
+.filters > :nth-child(12),
+.filters > :nth-child(13) { grid-column: span 2; }
+.filters > :nth-child(11) { grid-column: span 3; min-width: 0; }
+.filters > :nth-child(14) { grid-column: span 1; }
 .filters > .field,
 .filters > .date-range { min-width: 0; }
 .filters > .date-range .field { min-width: 0; }
 .field {
     display: grid;
-    gap: 7px;
+    gap: 3px;
     min-width: 150px;
 }
 .field.compact {
@@ -111,7 +111,7 @@ main {
 .field label,
 .check-field {
     color: #536d72;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 700;
 }
 input,
@@ -119,8 +119,8 @@ select,
 textarea {
     width: 100%;
     border: 1px solid #cddedb;
-    border-radius: 10px;
-    padding: 10px 12px;
+    border-radius: 8px;
+    padding: 7px 9px;
     color: #17343b;
     background: #fbfdfd;
     outline: none;
@@ -140,14 +140,14 @@ textarea:focus {
     min-width: 205px;
 }
 .date-range > span {
-    padding-bottom: 10px;
+    padding-bottom: 7px;
     color: #789094;
 }
 .check-field {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 10px 2px;
+    padding: 7px 2px;
 }
 .check-field input {
     width: 17px;
@@ -167,7 +167,7 @@ textarea:focus {
 .icon-button {
     border: 0;
     border-radius: 10px;
-    padding: 10px 17px;
+    padding: 8px 14px;
     font-weight: 800;
 }
 .primary {
@@ -218,6 +218,7 @@ textarea:focus {
 .table-scroll {
     overflow: auto;
     min-height: 250px;
+    max-height: 68vh;
 }
 table {
     width: 100%;
@@ -398,6 +399,10 @@ tbody tr:hover {
 .assessment.likely-real {
     color: #17634e;
     background: #e7f5ef;
+}
+.assessment.new-player {
+    color: #8a4b00;
+    background: #fff1cf;
 }
 .pagination {
     display: flex;

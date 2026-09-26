@@ -174,7 +174,10 @@ class CloudServiceTest(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(response_headers.get_content_type(), "text/html")
-        self.assertIn(".html", response_headers["Content-Disposition"])
+        self.assertRegex(
+            response_headers["Content-Disposition"],
+            r"filename\*=UTF-8''\d{4}-\d{2}-\d{2}-%E8%B4%A2%E5%AF%8C%E5%AF%86%E7%A0%81\.html",
+        )
         self.assertIn(
             "script-src 'unsafe-inline'",
             response_headers["Content-Security-Policy"],
