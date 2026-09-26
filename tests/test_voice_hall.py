@@ -23,6 +23,7 @@ from voice_hall import (  # noqa: E402
     _ensure_shell_api_types,
     _estimate_contribution_values,
     _extract_hall_id,
+    _extract_room_id_from_text,
     _entertainment_nav_selected,
     _find_entertainment_nav_point,
     _find_contribution_row_data,
@@ -157,6 +158,27 @@ class HallListRecognitionTest(unittest.TestCase):
     def test_extracts_hall_id_when_icon_is_joined_to_text(self) -> None:
         self.assertEqual(_extract_hall_id("▥ 120323"), "120323")
         self.assertEqual(_extract_hall_id("'４８９９８'"), "48998")
+
+    def test_extracts_room_id_before_heat_from_room_header(self) -> None:
+        self.assertEqual(_extract_room_id_from_text("ID:397🔥7853"), "397")
+        self.assertEqual(_extract_room_id_from_text("ID：１２３４５ 热度 28806"), "12345")
+        self.assertIsNone(_extract_room_id_from_text("热度 28806"))
+
+    def test_room_page_id_wins_over_hall_card_heat(self) -> None:
+        items = [
+            ocr("公告", (48, 141, 55, 25)),
+            ocr("聊聊天", (33, 1201, 79, 33)),
+            ocr("ID:397🔥7853", (180, 72, 190, 32)),
+        ]
+        self.assertEqual(self.scanner._extract_current_room_id(items), "397")
+
+    def test_room_page_id_handles_split_ocr_label(self) -> None:
+        items = [
+            ocr("ID:", (180, 72, 35, 32)),
+            ocr("397", (220, 74, 45, 28)),
+            ocr("7853", (280, 74, 55, 28)),
+        ]
+        self.assertEqual(self.scanner._extract_current_room_id(items), "397")
 
     def test_recognizes_current_hall_list_layout(self) -> None:
         items = [

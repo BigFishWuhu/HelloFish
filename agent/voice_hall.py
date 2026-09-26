@@ -66,6 +66,11 @@ APP_RESTART_WARMUP_SECONDS = 4.0
 DEFAULT_TARGET_APP_PACKAGE = "com.sybl.voiceroom"
 
 HALL_ID_RE = re.compile(r"(?<!\d)(\d{4,8})(?!\d)")
+# Room pages render the room id next to a fire/popularity counter, for
+# example ``ID:397🔥7853``. Only the number immediately following the
+# explicit ID label is a room id; the later number is heat and must be ignored.
+ROOM_ID_RE = re.compile(r"\bID\s*[:：]?\s*(\d{3,12})", re.IGNORECASE)
+ROOM_HEADER_Y_RANGE = (35, 180)
 PROFILE_ID_RE = re.compile(r"(?:I\s*D|ID|电)\s*[:：]?\s*(\d{4,12})", re.IGNORECASE)
 PROFILE_IP_RE = re.compile(r"I\s*P(?:属地)?\s*[:：]\s*(\S+)", re.IGNORECASE)
 ROOM_TITLE_RE = re.compile(r"^[^\n]{2,30}$")
@@ -122,6 +127,13 @@ class _ScanStopped(Exception):
 def _extract_hall_id(text: str) -> str | None:
     normalized = text.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
     match = HALL_ID_RE.search(normalized)
+    return match.group(1) if match else None
+
+
+def _extract_room_id_from_text(text: str) -> str | None:
+    """Read the room id from an explicit ID label, excluding adjacent heat."""
+    normalized = text.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+    match = ROOM_ID_RE.search(normalized)
     return match.group(1) if match else None
 
 
@@ -1233,32 +1245,51 @@ class ContributionScanner(CustomAction):
                 if max_halls and new_hall_count >= max_halls:
                     break
 
-                hall_id = str(candidate["hall_id"])
-                if hall_id in scanned_this_run:
-                    continue
-                if hall_id in skipped_room_ids:
-                    self._log(f"厅 {hall_id} 在跳过列表中，未进入")
-                    continue
-                if skip_scanned_today and _was_scanned_on(
-                    visited_halls.get(hall_id), scan_day
-                ):
-                    self._log(f"厅 {hall_id} 今天已经扫描，按设置跳过")
-                    continue
-
-                hall_name = str(candidate.get("name") or hall_id)
+                card_number = str(candidate["hall_id"])
+                hall_name = str(candidate.get("name") or card_number)
                 if _room_name_matches_skip(hall_name, skipped_room_names):
-                    self._log(f"厅 {hall_name} ({hall_id}) 命中跳过名称，未进入")
+                    self._log(f"厅 {hall_name} ({card_number}) 命中跳过名称，未进入")
                     continue
-                self._log(f"进入厅 {hall_name} ({hall_id})")
+                self._log(f"进入厅 {hall_name} ({card_number})，卡片数字仅作临时定位")
 
                 if not self._open_hall(context, int(candidate["card_y"]), delay):
-                    self._log(f"厅 {hall_id} 未进入成功，跳过")
+                    self._log(f"厅 {card_number} 未进入成功，跳过")
                     self._return_to_hall_list(context, max_attempts=2)
                     continue
 
                 room_image, room_items = self._capture_ocr(context)
                 if not self._is_room_page(room_items):
-                    self._log(f"厅 {hall_id} 页面状态异常，跳过")
+                    self._log(f"厅 {card_number} 页面状态异常，跳过")
+                    self._return_to_hall_list(context, max_attempts=2)
+                    continue
+
+                hall_id = self._extract_current_room_id(room_items)
+                if hall_id is None:
+                    # The room header is custom-drawn on some app versions,
+                    # so only pay for a hierarchy dump when OCR did not expose
+                    # the explicit ID label.
+                    hall_id = self._extract_current_room_id(
+                        room_items,
+                        self._dump_ui_hierarchy(),
+                    )
+                if hall_id is None:
+                    hall_id = card_number
+                    self._log(f"厅 {card_number} 房间页未读到明确 ID，暂用卡片数字兜底")
+                elif hall_id != card_number:
+                    self._log(f"厅 ID 已从房间页确认：卡片数字={card_number}，真实 ID={hall_id}")
+
+                if hall_id in scanned_this_run:
+                    self._log(f"厅 {hall_id} 本轮已扫描，跳过")
+                    self._return_to_hall_list(context, max_attempts=2)
+                    continue
+                if hall_id in skipped_room_ids:
+                    self._log(f"厅 {hall_id} 在跳过列表中，未扫描")
+                    self._return_to_hall_list(context, max_attempts=2)
+                    continue
+                if skip_scanned_today and _was_scanned_on(
+                    visited_halls.get(hall_id), scan_day
+                ):
+                    self._log(f"厅 {hall_id} 今天已经扫描，按设置跳过")
                     self._return_to_hall_list(context, max_attempts=2)
                     continue
 
@@ -2632,6 +2663,74 @@ class ContributionScanner(CustomAction):
             item["name"] = name
             candidates.append(item)
         return candidates
+
+    def _extract_current_room_id(
+        self,
+        items: list[Any],
+        hierarchy: str = "",
+    ) -> str | None:
+        """Extract the confirmed room id from the room page.
+
+        The room header can contain both ``ID:<room>`` and a fire/popularity
+        number. Prefer the explicit label and only use hierarchy values from
+        room-id resource ids so user ids and contribution values cannot win.
+        """
+        for item in sorted(items, key=lambda value: (_box(value)[1], _box(value)[0])):
+            x, y, width, height = _box(item)
+            if not (
+                ROOM_HEADER_Y_RANGE[0] <= y <= ROOM_HEADER_Y_RANGE[1]
+                and x <= 520
+            ):
+                continue
+            room_id = _extract_room_id_from_text(_result_text(item))
+            if room_id:
+                return room_id
+
+        # OCR may split ``ID:`` and its number into adjacent results. Pair an
+        # ID-only token with the nearest numeric token on the same header row.
+        for item in sorted(items, key=lambda value: (_box(value)[1], _box(value)[0])):
+            text = _result_text(item)
+            if not re.fullmatch(r"I\s*D\s*[:：]?", text, re.IGNORECASE):
+                continue
+            x, y, width, height = _box(item)
+            if not (ROOM_HEADER_Y_RANGE[0] <= y <= ROOM_HEADER_Y_RANGE[1] and x <= 520):
+                continue
+            center_y = y + height // 2
+            nearby: list[tuple[int, str]] = []
+            for other in items:
+                other_text = _result_text(other).translate(
+                    str.maketrans("０１２３４５６７８９", "0123456789")
+                )
+                ox, oy, _, other_height = _box(other)
+                if (
+                    ox >= x + width
+                    and ox - (x + width) <= 180
+                    and abs(oy + other_height // 2 - center_y) <= 28
+                    and re.fullmatch(r"\d{3,12}", other_text)
+                ):
+                    nearby.append((ox, other_text))
+            if nearby:
+                return min(nearby)[1]
+
+        root = _parse_android_hierarchy(hierarchy)
+        if root is None:
+            return None
+        for node in root.iter("node"):
+            resource_id = node.attrib.get("resource-id", "").lower()
+            text = node.attrib.get("text", "") or node.attrib.get("content-desc", "")
+            if "room" not in resource_id or not any(
+                marker in resource_id for marker in ("id", "code", "num", "number")
+            ):
+                continue
+            room_id = _extract_room_id_from_text(text)
+            if room_id:
+                return room_id
+            normalized = text.translate(
+                str.maketrans("０１２３４５６７８９", "0123456789")
+            ).strip()
+            if re.fullmatch(r"\d{3,12}", normalized):
+                return normalized
+        return None
 
     def _find_rank_rows(self, items: list[Any]) -> list[tuple[int, int]]:
         rows: list[tuple[int, int]] = []
